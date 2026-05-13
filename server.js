@@ -338,6 +338,49 @@ app.post('/api/patients/register-with-code', async (req, res) => {
   }
 });
 
+app.post('/api/patients/login', async (req, res) => {
+  try {
+    const { phone_number } = req.body;
+
+    if (!phone_number) {
+      return res.status(400).json({ error: 'Phone number required' });
+    }
+
+    // Find user by phone number
+    const { data: authUser } = await supabase
+      .from('auth_user')
+      .select('id, full_name')
+      .eq('phone_number', phone_number)
+      .single();
+
+    if (!authUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get patient profile
+    const { data: patient } = await supabase
+      .from('patient_profile')
+      .select('id, cancer_type, cancer_stage')
+      .eq('user_id', authUser.id)
+      .single();
+
+    // Generate session token (or get from Supabase)
+    const token = await generateToken(authUser.id); // Your token generation logic
+
+    res.json({
+      message: 'Login successful',
+      token,
+      patient: {
+        id: patient.id,
+        name: authUser.full_name,
+        cancer_type: patient.cancer_type
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/patients/:id/home — Patient home screen data
 app.get('/api/patients/:id/home', verifyAuth, async (req, res) => {
   try {
