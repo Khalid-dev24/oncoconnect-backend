@@ -326,7 +326,6 @@ app.post('/api/patients/register-with-code', async (req, res) => {
     
     res.status(201).json({
     message: 'Patient registered successfully',
-    token: authData.session.access_token,  // ← ADD THIS LINE
     patient: {
       id: patientProfile.id,
       name: full_name,
