@@ -323,29 +323,21 @@ app.post('/api/patients/register-with-code', async (req, res) => {
 
     if (profileError) throw profileError;
     
-    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-    email: `${phone_number}@oncoconnect.local`,
-    password: crypto.randomBytes(16).toString('hex'),
-    email_confirm: true,
-    user_metadata: { phone: phone_number, role: 'patient' }
-   });
+    // Create session to get access token
+    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession(authData.user.id);
 
-  if (authError) throw authError;
+    if (sessionError) throw sessionError;
 
-  const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession(authData.user.id);
-
-  if (sessionError) throw sessionError;
-
-  res.status(201).json({
-    message: 'Patient registered successfully',
-    token: sessionData.session.access_token, 
-    patient: {
-      id: patientProfile.id,
-      name: full_name,
-      cancer_type,
-      oncologist_id: oncologist.id
-    }
-  });
+    res.status(201).json({
+      message: 'Patient registered successfully',
+      token: sessionData.access_token,
+      patient: {
+        id: patientProfile.id,
+        name: full_name,
+        cancer_type,
+        oncologist_id: oncologist.id
+      }
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -377,12 +369,14 @@ app.post('/api/patients/login', async (req, res) => {
       .eq('user_id', authUser.id)
       .single();
 
-    // Generate session token (or get from Supabase)
-    const token = await generateToken(authUser.id); // Your token generation logic
+    // Create session to get access token
+    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession(authUser.id);
+
+    if (sessionError) throw sessionError;
 
     res.json({
       message: 'Login successful',
-      token,
+      token: sessionData.access_token,
       patient: {
         id: patient.id,
         name: authUser.full_name,
