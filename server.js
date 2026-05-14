@@ -26,7 +26,7 @@ app.use(express.json());
 // ────────────────────────────────────────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // Service role for server-side operations
+  process.env.SUPABASE_SERVICE_ROLE_KEY 
 );
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -486,7 +486,7 @@ app.post('/api/consultations/open-window', verifyAuth, async (req, res) => {
       .from('patient_profile')
       .select('assigned_oncologist_id')
       .eq('id', patient_id)
-      .eq('user_id', req.user.id)
+      .eq('user_id', req.user.user_id)
       .single();
 
     if (!patient) return res.status(403).json({ error: 'Unauthorized' });
