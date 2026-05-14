@@ -240,15 +240,22 @@ app.get('/api/doctors/:id/dashboard', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Verify doctor owns this profile
+    // Verify doctor owns this profile and fetch user_id and invite_code
     const { data: doctor } = await supabase
       .from('oncologist_profile')
-      .select('id')
+      .select('id, user_id, invite_code')
       .eq('id', id)
       .eq('user_id', req.user.id)
       .single();
 
     if (!doctor) return res.status(403).json({ error: 'Unauthorized' });
+
+    // Get doctor's name from auth_user
+    const { data: authUser } = await supabase
+      .from('auth_user')
+      .select('full_name')
+      .eq('id', doctor.user_id)
+      .single();
 
     // Fetch all patients
     const { data: patients } = await supabase
@@ -286,6 +293,11 @@ app.get('/api/doctors/:id/dashboard', verifyAuth, async (req, res) => {
       .reduce((sum, p) => sum + (p.doctor_share || 0), 0) || 0;
 
     res.json({
+      doctor: {
+        id: id,
+        name: authUser?.full_name || 'Doctor',
+        invite_code: doctor.invite_code
+      },
       patients: patientsWithRisk,
       total_patients: patients.length,
       earnings: {
@@ -294,25 +306,6 @@ app.get('/api/doctors/:id/dashboard', verifyAuth, async (req, res) => {
         recent_transactions: payments?.slice(0, 10) || []
       }
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/doctors/:id/invite-code — Get or regenerate invite code
-app.get('/api/doctors/:id/invite-code', verifyAuth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { data: doctor } = await supabase
-      .from('oncologist_profile')
-      .select('invite_code')
-      .eq('id', id)
-      .eq('user_id', req.user.id)
-      .single();
-
-    if (!doctor) return res.status(403).json({ error: 'Unauthorized' });
-
-    res.json({ invite_code: doctor.invite_code });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
