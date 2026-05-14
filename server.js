@@ -41,7 +41,11 @@ function verifyAuth(req, res, next) {
   
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-    req.user = decoded;
+    req.user = {
+      id: decoded.user_id,          
+      doctor_id: decoded.doctor_id,
+      role: decoded.role
+    };
     next();
   } catch (err) {
     res.status(401).json({ error: 'Invalid token' });
