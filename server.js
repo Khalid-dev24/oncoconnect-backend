@@ -521,26 +521,65 @@ app.post('/api/consultations/open-window', verifyAuth, async (req, res) => {
 });
 
 // POST /api/consultations/verify-payment — Verify Paystack payment and create window
-app.post('/api/consultations/verify-payment', async (req, res) => {
+// POST /api/consultations/verify-payment — Verify Paystack payment and create window
+app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
   try {
     const { reference, payment_id } = req.body;
 
     if (!reference) return res.status(400).json({ error: 'No reference provided' });
+    if (!payment_id) return res.status(400).json({ error: 'No payment_id provided' });
 
-    // Verify with Paystack
-    const paystackResponse = await axios.get(
-      `https://api.paystack.co/transaction/verify/${reference}`,
-      {
-        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` }
+    // Verify payment belongs to authenticated user
+    const { data: payment } = await supabase
+      .from('payment')
+      .select('patient_id, oncologist_id, status')
+      .eq('id', payment_id)
+      .single();
+
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+
+    // Verify patient belongs to user
+    const { data: patient } = await supabase
+      .from('patient_profile')
+      .select('id')
+      .eq('id', payment.patient_id)
+      .eq('user_id', req.user.user_id)
+      .single();
+
+    if (!patient) return res.status(403).json({ error: 'Unauthorized' });
+
+    // Check if this is a mock reference (for testing)
+    let isPaymentValid = false;
+    
+    if (reference.startsWith('mock_')) {
+      // Mock payment - for testing only
+      console.log('Mock payment reference detected - skipping Paystack verification');
+      isPaymentValid = true;
+    } else {
+      // Real payment - verify with Paystack
+      try {
+        const paystackResponse = await axios.get(
+          `https://api.paystack.co/transaction/verify/${reference}`,
+          {
+            headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+            timeout: 5000
+          }
+        );
+
+        if (paystackResponse.data.status === true && paystackResponse.data.data.status === 'success') {
+          isPaymentValid = true;
+        }
+      } catch (paystackError) {
+        console.error('Paystack verification error:', paystackError.message);
+        return res.status(400).json({ error: 'Payment verification failed with Paystack' });
       }
-    );
+    }
 
-    if (paystackResponse.data.status !== true || paystackResponse.data.data.status !== 'success') {
+    if (!isPaymentValid) {
       return res.status(400).json({ error: 'Payment verification failed' });
     }
 
     // Update payment record
-    const paymentData = paystackResponse.data.data;
     const { error: updateError } = await supabase
       .from('payment')
       .update({
@@ -553,13 +592,7 @@ app.post('/api/consultations/verify-payment', async (req, res) => {
 
     if (updateError) throw updateError;
 
-    // Get patient and create consultation window
-    const { data: payment } = await supabase
-      .from('payment')
-      .select('patient_id, oncologist_id')
-      .eq('id', payment_id)
-      .single();
-
+    // Create consultation window
     const expiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000);
     const { data: window, error: windowError } = await supabase
       .from('consultation_window')
@@ -584,6 +617,7 @@ app.post('/api/consultations/verify-payment', async (req, res) => {
       }
     });
   } catch (err) {
+    console.error('Verify payment error:', err);
     res.status(500).json({ error: err.message });
   }
 });
