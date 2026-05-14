@@ -185,6 +185,56 @@ app.post('/api/doctors/register', async (req, res) => {
   }
 });
 
+// POST /api/doctors/login — Doctor login
+app.post('/api/doctors/login', async (req, res) => {
+  try {
+    const { mdcn_number, phone_number } = req.body;
+
+    if (!mdcn_number || !phone_number) {
+      return res.status(400).json({ error: 'MDCN and phone number required' });
+    }
+
+    // Find doctor by MDCN
+    const { data: doctorProfile, error: profileError } = await supabase
+      .from('oncologist_profile')
+      .select('id, user_id')
+      .eq('mdcn_number', mdcn_number)
+      .single();
+
+    if (profileError || !doctorProfile) {
+      return res.status(401).json({ error: 'Invalid MDCN or phone number' });
+    }
+
+    // Verify phone number matches
+    const { data: authUser, error: userError } = await supabase
+      .from('auth_user')
+      .select('phone_number, id')
+      .eq('id', doctorProfile.user_id)
+      .single();
+
+    if (userError || authUser.phone_number !== phone_number) {
+      return res.status(401).json({ error: 'Invalid MDCN or phone number' });
+    }
+
+    // Generate JWT token (use your JWT secret)
+    const token = jwt.sign(
+      { user_id: authUser.id, doctor_id: doctorProfile.id, role: 'oncologist' },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      doctor: {
+        id: doctorProfile.id,
+        user_id: authUser.id
+      },
+      token
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/doctors/:id/dashboard — Doctor dashboard data
 app.get('/api/doctors/:id/dashboard', verifyAuth, async (req, res) => {
   try {
