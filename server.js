@@ -563,6 +563,48 @@ app.post('/api/doctors/:id/verify-mdcn', verifyAuth, async (req, res) => {
   }
 });
 
+// Create a new prescription
+app.post('/api/prescriptions', verifyAuth, async (req, res) => {
+  try {
+    const { patient_id, drug_name, dosage, frequency, duration, instructions, oncologist_id } = req.body;
+    
+    const { data, error } = await supabase
+      .from('prescription')
+      .insert([{
+        patient_id,
+        drug_name,
+        dosage,
+        frequency,
+        duration,
+        instructions,
+        oncologist_id,
+        created_at: new Date().toISOString(),
+      }])
+      .select();
+
+    if (error) return res.status(400).json({ error: error.message });
+    res.status(201).json({ prescription: data[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get doctor's prescriptions
+app.get('/api/doctors/:id/prescriptions', verifyAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('prescription')
+      .select('*')
+      .eq('oncologist_id', req.params.id)
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ prescriptions: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/prescriptions/:id/generate-qr — Generate QR code for prescription
 app.post('/api/prescriptions/:id/generate-qr', verifyAuth, async (req, res) => {
   try {
