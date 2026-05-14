@@ -343,6 +343,47 @@ CREATE POLICY "Oncologists see their patients' medication logs" ON public.medica
   ));
 
 -- ────────────────────────────────────────────────────────────────────────────
+-- 11. ALERT — Emergency alerts triggered by high-risk symptoms
+-- ────────────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.alert (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  patient_id UUID NOT NULL REFERENCES public.patient_profile ON DELETE CASCADE,
+  oncologist_id UUID NOT NULL REFERENCES public.oncologist_profile ON DELETE CASCADE,
+  symptom_log_id UUID REFERENCES public.symptom_log ON DELETE SET NULL,
+  alert_type TEXT NOT NULL CHECK (alert_type IN ('high_severity', 'medication_concern', 'missed_medication', 'critical_symptom')),
+  severity_level INTEGER CHECK (severity_level BETWEEN 1 AND 5),
+  message TEXT NOT NULL,
+  status TEXT CHECK (status IN ('active', 'acknowledged', 'resolved')),
+  triggered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  acknowledged_at TIMESTAMP WITH TIME ZONE,
+  acknowledged_by UUID REFERENCES public.auth_user ON DELETE SET NULL,
+  resolved_at TIMESTAMP WITH TIME ZONE,
+  resolved_by UUID REFERENCES public.auth_user ON DELETE SET NULL,
+  resolution_notes TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+ALTER TABLE public.alert ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Patients see their own alerts" ON public.alert
+  FOR SELECT USING (patient_id IN (
+    SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
+  ));
+
+CREATE POLICY "Oncologists see their patients' alerts" ON public.alert
+  FOR SELECT USING (oncologist_id IN (
+    SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid()
+  ));
+
+CREATE POLICY "Users can acknowledge/resolve alerts" ON public.alert
+  FOR UPDATE USING (
+    acknowledged_by = auth.uid() OR resolved_by = auth.uid() OR
+    patient_id IN (SELECT id FROM public.patient_profile WHERE user_id = auth.uid()) OR
+    oncologist_id IN (SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid())
+  );
+
+-- ────────────────────────────────────────────────────────────────────────────
 -- INDEXES FOR PERFORMANCE
 -- ────────────────────────────────────────────────────────────────────────────
 CREATE INDEX idx_patient_oncologist ON public.patient_profile(assigned_oncologist_id);
@@ -352,6 +393,9 @@ CREATE INDEX idx_message_window ON public.message(window_id);
 CREATE INDEX idx_prescription_patient ON public.prescription(patient_id);
 CREATE INDEX idx_symptom_patient ON public.symptom_log(patient_id);
 CREATE INDEX idx_medication_patient ON public.medication(patient_id);
+CREATE INDEX idx_alert_patient ON public.alert(patient_id);
+CREATE INDEX idx_alert_oncologist ON public.alert(oncologist_id);
+CREATE INDEX idx_alert_status ON public.alert(status);
 CREATE INDEX idx_payment_oncologist ON public.payment(oncologist_id);
 CREATE INDEX idx_oncologist_invite_code ON public.oncologist_profile(invite_code);
 

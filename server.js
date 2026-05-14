@@ -9,6 +9,8 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const QRCode = require('qrcode');
+const PDFDocument = require('pdfkit');
 
 dotenv.config();
 
@@ -105,6 +107,114 @@ function getRiskBadge(score) {
   if (score >= 70) return 'Red';
   if (score >= 40) return 'Amber';
   return 'Green';
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// HELPER: Generate QR code as data URL for prescription
+// ────────────────────────────────────────────────────────────────────────────
+async function generatePrescriptionQRCode(prescriptionId) {
+  try {
+    const qrDataUrl = await QRCode.toDataURL(prescriptionId, {
+      errorCorrectionLevel: 'H',
+      type: 'image/png',
+      quality: 0.95,
+      margin: 1,
+      width: 300
+    });
+    return qrDataUrl;
+  } catch (err) {
+    console.error('QR code generation failed:', err);
+    throw err;
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// HELPER: Generate prescription PDF
+// ────────────────────────────────────────────────────────────────────────────
+async function generatePrescriptionPDF(prescriptionData) {
+  return new Promise((resolve, reject) => {
+    try {
+      const pdf = new PDFDocument({
+        size: 'A4',
+        margin: 40
+      });
+
+      const chunks = [];
+      pdf.on('data', chunk => chunks.push(chunk));
+      pdf.on('end', () => {
+        const pdfBuffer = Buffer.concat(chunks);
+        resolve(pdfBuffer);
+      });
+      pdf.on('error', reject);
+
+      // Add header
+      pdf.fontSize(20).font('Helvetica-Bold').text('PRESCRIPTION', { align: 'center' });
+      pdf.moveDown(0.5);
+      pdf.fontSize(11).font('Helvetica').text('Digital Prescription from OncoConnect', { align: 'center' });
+      pdf.moveTo(40, pdf.y).lineTo(555, pdf.y).stroke();
+      pdf.moveDown(1);
+
+      // Prescription details
+      pdf.fontSize(12).font('Helvetica-Bold').text('Prescription Details', { underline: true });
+      pdf.moveDown(0.5);
+      
+      pdf.fontSize(10).font('Helvetica');
+      pdf.text(`Prescription ID: ${prescriptionData.prescription_id}`);
+      pdf.text(`Verification Code: ${prescriptionData.qr_code}`);
+      pdf.text(`Date: ${new Date(prescriptionData.issued_at).toLocaleDateString()}`);
+      pdf.moveDown(1);
+
+      // Patient info
+      pdf.fontSize(12).font('Helvetica-Bold').text('Patient Information', { underline: true });
+      pdf.moveDown(0.5);
+      pdf.fontSize(10).font('Helvetica');
+      pdf.text(`Name: ${prescriptionData.patient_name}`);
+      pdf.text(`Phone: ${prescriptionData.patient_phone}`);
+      pdf.moveDown(1);
+
+      // Doctor info
+      pdf.fontSize(12).font('Helvetica-Bold').text('Prescribed By', { underline: true });
+      pdf.moveDown(0.5);
+      pdf.fontSize(10).font('Helvetica');
+      pdf.text(`Doctor: ${prescriptionData.doctor_name}`);
+      pdf.text(`MDCN: ${prescriptionData.mdcn_number}`);
+      pdf.text(`Hospital: ${prescriptionData.hospital || 'N/A'}`);
+      pdf.moveDown(1);
+
+      // Medication details
+      pdf.fontSize(12).font('Helvetica-Bold').text('Medication', { underline: true });
+      pdf.moveDown(0.5);
+      pdf.fontSize(10).font('Helvetica');
+      pdf.text(`Drug Name: ${prescriptionData.drug_name}`);
+      pdf.text(`Dosage: ${prescriptionData.dosage}`);
+      pdf.text(`Frequency: ${prescriptionData.frequency}`);
+      if (prescriptionData.duration) pdf.text(`Duration: ${prescriptionData.duration}`);
+      if (prescriptionData.instructions) pdf.text(`Instructions: ${prescriptionData.instructions}`);
+      pdf.moveDown(1);
+
+      // QR Code section (if available)
+      if (prescriptionData.qr_code_url) {
+        pdf.fontSize(10).font('Helvetica').text('Verification QR Code:', { underline: true });
+        pdf.moveDown(0.5);
+        // Add QR code image if provided
+        try {
+          pdf.image(prescriptionData.qr_code_url, {
+            fit: [150, 150],
+            align: 'center'
+          });
+        } catch (imgErr) {
+          console.warn('Could not add QR image to PDF:', imgErr.message);
+        }
+      }
+
+      pdf.moveDown(2);
+      pdf.fontSize(9).font('Helvetica').text('This is a digitally generated prescription. Verify authenticity using the QR code on this document.', { align: 'center', color: '#666666' });
+
+      pdf.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -321,6 +431,275 @@ app.get('/api/doctors/:id/dashboard', verifyAuth, async (req, res) => {
   }
 });
 
+// GET /api/doctors/:id/prescriptions — Fetch all prescriptions for a doctor
+app.get('/api/doctors/:id/prescriptions', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify doctor owns this profile
+    const { data: doctor } = await supabase
+      .from('oncologist_profile')
+      .select('id')
+      .eq('id', id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (!doctor) return res.status(403).json({ error: 'Unauthorized' });
+
+    // Fetch all prescriptions issued by this doctor
+    const { data: prescriptions, error: prescriptionError } = await supabase
+      .from('prescription')
+      .select(`
+        id,
+        patient_id,
+        drug_name,
+        dosage,
+        frequency,
+        duration,
+        instructions,
+        pdf_url,
+        qr_verification_code,
+        issued_at,
+        is_active,
+        patient_profile (
+          user_id,
+          auth_user (full_name, phone_number)
+        )
+      `)
+      .eq('oncologist_id', id)
+      .order('issued_at', { ascending: false });
+
+    if (prescriptionError) throw prescriptionError;
+
+    res.json({
+      doctor_id: id,
+      total_prescriptions: prescriptions?.length || 0,
+      prescriptions: prescriptions || []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/doctors/:id/verify-mdcn — Verify doctor's MDCN
+app.post('/api/doctors/:id/verify-mdcn', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { mdcn_number } = req.body;
+
+    if (!mdcn_number) {
+      return res.status(400).json({ error: 'MDCN number required' });
+    }
+
+    // Verify doctor owns this profile
+    const { data: doctor } = await supabase
+      .from('oncologist_profile')
+      .select('id, mdcn_number, is_verified')
+      .eq('id', id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (!doctor) return res.status(403).json({ error: 'Unauthorized' });
+
+    // Check if MDCN matches
+    if (doctor.mdcn_number !== mdcn_number) {
+      return res.status(400).json({ error: 'MDCN does not match registered number' });
+    }
+
+    // In production, call external MDCN verification API
+    // For now, we'll simulate the verification
+    let verificationStatus = 'pending';
+    let verificationMessage = 'Verification initiated with MDCN registry';
+
+    try {
+      // Mock external API call (would be actual MDCN verification service)
+      if (process.env.MDCN_API_KEY && process.env.MDCN_API_KEY !== 'to_be_configured') {
+        const mdcnResponse = await axios.post(
+          'https://mdcn.org.ng/api/verify',
+          { mdcn_number },
+          {
+            headers: { 'Authorization': `Bearer ${process.env.MDCN_API_KEY}` },
+            timeout: 10000
+          }
+        );
+
+        if (mdcnResponse.data.valid === true) {
+          verificationStatus = 'verified';
+          verificationMessage = 'MDCN verified successfully';
+        } else {
+          verificationStatus = 'failed';
+          verificationMessage = 'MDCN could not be verified';
+        }
+      }
+    } catch (apiError) {
+      console.warn('MDCN API verification failed, continuing with pending status:', apiError.message);
+    }
+
+    // Update doctor profile
+    const { data: updatedDoctor, error: updateError } = await supabase
+      .from('oncologist_profile')
+      .update({
+        is_verified: verificationStatus === 'verified',
+        verification_notes: verificationMessage,
+        verified_at: verificationStatus === 'verified' ? new Date().toISOString() : null
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    res.json({
+      message: verificationMessage,
+      doctor: {
+        id: updatedDoctor.id,
+        mdcn: updatedDoctor.mdcn_number,
+        is_verified: updatedDoctor.is_verified,
+        verified_at: updatedDoctor.verified_at
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/prescriptions/:id/generate-qr — Generate QR code for prescription
+app.post('/api/prescriptions/:id/generate-qr', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch prescription
+    const { data: prescription, error: prescriptionError } = await supabase
+      .from('prescription')
+      .select(`
+        id,
+        patient_id,
+        oncologist_id,
+        patient_profile (
+          assigned_oncologist_id
+        ),
+        oncologist_profile (
+          user_id
+        )
+      `)
+      .eq('id', id)
+      .single();
+
+    if (prescriptionError) throw prescriptionError;
+    if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
+
+    // Verify user is the oncologist or assigned doctor
+    if (prescription.oncologist_profile.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Generate QR code
+    const qrDataUrl = await generatePrescriptionQRCode(id);
+
+    // Update prescription with QR verification code if not already set
+    const qrCode = crypto.randomBytes(16).toString('hex');
+    const { error: updateError } = await supabase
+      .from('prescription')
+      .update({
+        qr_verification_code: qrCode
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    res.json({
+      prescription_id: id,
+      qr_code: qrCode,
+      qr_code_url: qrDataUrl,
+      message: 'QR code generated successfully'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/prescriptions/:id/generate-pdf — Generate PDF for prescription
+app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch prescription with all related data
+    const { data: prescription, error: prescriptionError } = await supabase
+      .from('prescription')
+      .select(`
+        id,
+        drug_name,
+        dosage,
+        frequency,
+        duration,
+        instructions,
+        issued_at,
+        qr_verification_code,
+        patient_id,
+        oncologist_id,
+        patient_profile (
+          user_id,
+          auth_user (full_name, phone_number),
+          assigned_oncologist_id
+        ),
+        oncologist_profile (
+          user_id,
+          mdcn_number,
+          hospital_affiliation
+        )
+      `)
+      .eq('id', id)
+      .single();
+
+    if (prescriptionError) throw prescriptionError;
+    if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
+
+    // Verify user is the oncologist
+    if (prescription.oncologist_profile.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Get doctor details
+    const { data: doctorAuth } = await supabase
+      .from('auth_user')
+      .select('full_name')
+      .eq('id', prescription.oncologist_profile.user_id)
+      .single();
+
+    // Generate QR code for PDF
+    const qrDataUrl = await generatePrescriptionQRCode(id);
+
+    // Prepare PDF data
+    const pdfData = {
+      prescription_id: prescription.id,
+      patient_name: prescription.patient_profile.auth_user.full_name,
+      patient_phone: prescription.patient_profile.auth_user.phone_number,
+      doctor_name: doctorAuth?.full_name || 'Doctor',
+      mdcn_number: prescription.oncologist_profile.mdcn_number,
+      hospital: prescription.oncologist_profile.hospital_affiliation,
+      drug_name: prescription.drug_name,
+      dosage: prescription.dosage,
+      frequency: prescription.frequency,
+      duration: prescription.duration,
+      instructions: prescription.instructions,
+      issued_at: prescription.issued_at,
+      qr_code: prescription.qr_verification_code,
+      qr_code_url: qrDataUrl
+    };
+
+    // Generate PDF
+    const pdfBuffer = await generatePrescriptionPDF(pdfData);
+
+    // Set response headers for PDF download
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="prescription_${id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('PDF generation error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // PATIENT ENDPOINTS
 // ════════════════════════════════════════════════════════════════════════════
@@ -526,6 +905,167 @@ app.get('/api/patients/:id/home', verifyAuth, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// MESSAGING ENDPOINTS
+// ════════════════════════════════════════════════════════════════════════════
+
+// POST /api/messages — Send a message in consultation window
+app.post('/api/messages', verifyAuth, async (req, res) => {
+  try {
+    const { window_id, body, attachment_url } = req.body;
+
+    if (!window_id || !body) {
+      return res.status(400).json({ error: 'window_id and body are required' });
+    }
+
+    // Verify user is part of this consultation window
+    const { data: window } = await supabase
+      .from('consultation_window')
+      .select(`
+        id,
+        patient_id,
+        oncologist_id,
+        patient_profile (
+          user_id
+        ),
+        oncologist_profile (
+          user_id
+        )
+      `)
+      .eq('id', window_id)
+      .single();
+
+    if (!window) return res.status(404).json({ error: 'Consultation window not found' });
+
+    const isPatient = window.patient_profile?.user_id === req.user.id;
+    const isOncologist = window.oncologist_profile?.user_id === req.user.id;
+
+    if (!isPatient && !isOncologist) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Create message
+    const { data: message, error: messageError } = await supabase
+      .from('message')
+      .insert({
+        window_id,
+        sender_id: req.user.id,
+        body,
+        attachment_url
+      })
+      .select()
+      .single();
+
+    if (messageError) throw messageError;
+
+    res.status(201).json({
+      message_id: message.id,
+      sent_at: message.sent_at,
+      message: 'Message sent successfully'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/consultations/:window_id/messages — Fetch messages for a consultation window
+app.get('/api/consultations/:window_id/messages', verifyAuth, async (req, res) => {
+  try {
+    const { window_id } = req.params;
+
+    // Verify user is part of this consultation window
+    const { data: window } = await supabase
+      .from('consultation_window')
+      .select(`
+        id,
+        patient_id,
+        oncologist_id,
+        patient_profile (
+          user_id
+        ),
+        oncologist_profile (
+          user_id
+        )
+      `)
+      .eq('id', window_id)
+      .single();
+
+    if (!window) return res.status(404).json({ error: 'Consultation window not found' });
+
+    const isPatient = window.patient_profile?.user_id === req.user.id;
+    const isOncologist = window.oncologist_profile?.user_id === req.user.id;
+
+    if (!isPatient && !isOncologist) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Fetch messages
+    const { data: messages, error: messagesError } = await supabase
+      .from('message')
+      .select(`
+        id,
+        sender_id,
+        body,
+        attachment_url,
+        sent_at,
+        read_at,
+        auth_user (full_name, role)
+      `)
+      .eq('window_id', window_id)
+      .order('sent_at', { ascending: true });
+
+    if (messagesError) throw messagesError;
+
+    res.json({
+      window_id,
+      total_messages: messages?.length || 0,
+      messages: messages || []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/messages/:id/read — Mark message as read
+app.put('/api/messages/:id/read', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch message
+    const { data: message, error: messageError } = await supabase
+      .from('message')
+      .select('id, window_id, sender_id')
+      .eq('id', id)
+      .single();
+
+    if (messageError) throw messageError;
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+
+    // Verify user is not the sender (only recipients can mark as read)
+    if (message.sender_id === req.user.id) {
+      return res.status(400).json({ error: 'Cannot mark own message as read' });
+    }
+
+    // Update message
+    const { error: updateError } = await supabase
+      .from('message')
+      .update({
+        read_at: new Date().toISOString()
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    res.json({
+      message_id: id,
+      read_at: new Date().toISOString(),
+      message: 'Message marked as read'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // CONSULTATION WINDOW & PAYMENT ENDPOINTS
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -671,6 +1211,262 @@ app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('Verify payment error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// EMERGENCY ALERT ENDPOINTS
+// ════════════════════════════════════════════════════════════════════════════
+
+// POST /api/alerts/trigger — Trigger emergency alert (via symptom severity or manual)
+app.post('/api/alerts/trigger', verifyAuth, async (req, res) => {
+  try {
+    const { patient_id, alert_type, severity_level, message, symptom_log_id } = req.body;
+
+    if (!patient_id || !alert_type || !severity_level || !message) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Get patient details
+    const { data: patient } = await supabase
+      .from('patient_profile')
+      .select('id, user_id, assigned_oncologist_id')
+      .eq('id', patient_id)
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (!patient) return res.status(403).json({ error: 'Unauthorized' });
+
+    // Create alert
+    const { data: alert, error: alertError } = await supabase
+      .from('alert')
+      .insert({
+        patient_id,
+        oncologist_id: patient.assigned_oncologist_id,
+        alert_type,
+        severity_level,
+        message,
+        symptom_log_id,
+        status: 'active'
+      })
+      .select()
+      .single();
+
+    if (alertError) throw alertError;
+
+    // Update symptom_log if provided
+    if (symptom_log_id) {
+      await supabase
+        .from('symptom_log')
+        .update({ alert_triggered: true })
+        .eq('id', symptom_log_id);
+    }
+
+    res.status(201).json({
+      alert_id: alert.id,
+      alert_type,
+      severity_level,
+      status: alert.status,
+      triggered_at: alert.triggered_at,
+      message: 'Emergency alert triggered successfully'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/alerts — Fetch alerts (for patient or oncologist)
+app.get('/api/alerts', verifyAuth, async (req, res) => {
+  try {
+    const { status, severity_level } = req.query;
+
+    // Determine if user is patient or oncologist
+    const { data: patient } = await supabase
+      .from('patient_profile')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .single();
+
+    const { data: oncologist } = await supabase
+      .from('oncologist_profile')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .single();
+
+    let query = supabase.from('alert').select(`
+      id,
+      patient_id,
+      oncologist_id,
+      alert_type,
+      severity_level,
+      message,
+      status,
+      triggered_at,
+      acknowledged_at,
+      resolved_at,
+      resolution_notes,
+      patient_profile (
+        auth_user (full_name, phone_number)
+      )
+    `);
+
+    // Filter based on user role
+    if (patient) {
+      query = query.eq('patient_id', patient.id);
+    } else if (oncologist) {
+      query = query.eq('oncologist_id', oncologist.id);
+    } else {
+      return res.status(403).json({ error: 'User profile not found' });
+    }
+
+    // Apply filters
+    if (status) query = query.eq('status', status);
+    if (severity_level) query = query.gte('severity_level', parseInt(severity_level));
+
+    const { data: alerts, error: alertsError } = await query.order('triggered_at', { ascending: false });
+
+    if (alertsError) throw alertsError;
+
+    res.json({
+      total_alerts: alerts?.length || 0,
+      alerts: alerts || []
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/alerts/:id — Get specific alert details
+app.get('/api/alerts/:id', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: alert, error: alertError } = await supabase
+      .from('alert')
+      .select(`
+        *,
+        patient_profile (
+          auth_user (full_name, phone_number)
+        ),
+        oncologist_profile (
+          auth_user (full_name)
+        ),
+        symptom_log (*)
+      `)
+      .eq('id', id)
+      .single();
+
+    if (alertError) throw alertError;
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+    // Verify access
+    if (alert.oncologist_id !== req.user.doctor_id && 
+        alert.patient_id !== req.user.patient_id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    res.json({ alert });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/alerts/:id/acknowledge — Acknowledge alert
+app.put('/api/alerts/:id/acknowledge', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: alert } = await supabase
+      .from('alert')
+      .select('id, oncologist_id, patient_id')
+      .eq('id', id)
+      .single();
+
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+    // Verify access (must be oncologist or patient)
+    const { data: oncologist } = await supabase
+      .from('oncologist_profile')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .single();
+
+    const { data: patient } = await supabase
+      .from('patient_profile')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (oncologist?.id !== alert.oncologist_id && patient?.id !== alert.patient_id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { error: updateError } = await supabase
+      .from('alert')
+      .update({
+        status: 'acknowledged',
+        acknowledged_at: new Date().toISOString(),
+        acknowledged_by: req.user.id
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    res.json({
+      alert_id: id,
+      status: 'acknowledged',
+      acknowledged_at: new Date().toISOString(),
+      message: 'Alert acknowledged'
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/alerts/:id/resolve — Resolve alert with notes
+app.put('/api/alerts/:id/resolve', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { resolution_notes } = req.body;
+
+    const { data: alert } = await supabase
+      .from('alert')
+      .select('id, oncologist_id')
+      .eq('id', id)
+      .single();
+
+    if (!alert) return res.status(404).json({ error: 'Alert not found' });
+
+    // Verify access (must be oncologist)
+    const { data: oncologist } = await supabase
+      .from('oncologist_profile')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .eq('id', alert.oncologist_id)
+      .single();
+
+    if (!oncologist) return res.status(403).json({ error: 'Only oncologist can resolve alerts' });
+
+    const { error: updateError } = await supabase
+      .from('alert')
+      .update({
+        status: 'resolved',
+        resolved_at: new Date().toISOString(),
+        resolved_by: req.user.id,
+        resolution_notes
+      })
+      .eq('id', id);
+
+    if (updateError) throw updateError;
+
+    res.json({
+      alert_id: id,
+      status: 'resolved',
+      resolved_at: new Date().toISOString(),
+      message: 'Alert resolved'
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
