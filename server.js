@@ -323,14 +323,20 @@ app.post('/api/patients/register-with-code', async (req, res) => {
 
     if (profileError) throw profileError;
     
-    // Create session to get access token
-    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession(authData.user.id);
-
-    if (sessionError) throw sessionError;
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        user_id: authData.user.id, 
+        phone: phone_number,
+        role: 'patient'
+      },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '30d' }
+    );
 
     res.status(201).json({
       message: 'Patient registered successfully',
-      token: sessionData.access_token,
+      token: token,
       patient: {
         id: patientProfile.id,
         name: full_name,
@@ -369,14 +375,20 @@ app.post('/api/patients/login', async (req, res) => {
       .eq('user_id', authUser.id)
       .single();
 
-    // Create session to get access token
-    const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession(authUser.id);
-
-    if (sessionError) throw sessionError;
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        user_id: authUser.id, 
+        phone: phone_number,
+        role: 'patient'
+      },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '30d' }
+    );
 
     res.json({
       message: 'Login successful',
-      token: sessionData.access_token,
+      token: token,
       patient: {
         id: patient.id,
         name: authUser.full_name,
