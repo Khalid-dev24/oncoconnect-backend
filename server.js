@@ -262,9 +262,15 @@ app.get('/api/doctors/:id/dashboard', verifyAuth, async (req, res) => {
       .single();
 
     // Fetch all patients
-    const { data: patients } = await supabase
+      const { data: patients } = await supabase
       .from('patient_profile')
-      .select('id, user_id, cancer_type, treatment_status')
+      .select(`
+        id, 
+        user_id, 
+        cancer_type, 
+        treatment_status,
+        auth_user (full_name)
+      `)
       .eq('assigned_oncologist_id', id);
 
     // Calculate risk scores for each patient
