@@ -322,18 +322,30 @@ app.post('/api/patients/register-with-code', async (req, res) => {
       .single();
 
     if (profileError) throw profileError;
-
     
-    res.status(201).json({
+    const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    email: `${phone_number}@oncoconnect.local`,
+    password: crypto.randomBytes(16).toString('hex'),
+    email_confirm: true,
+    user_metadata: { phone: phone_number, role: 'patient' }
+   });
+
+  if (authError) throw authError;
+
+  const { data: sessionData, error: sessionError } = await supabase.auth.admin.createSession(authData.user.id);
+
+  if (sessionError) throw sessionError;
+
+  res.status(201).json({
     message: 'Patient registered successfully',
-    token: authData.session.access_token,  // ← ADD THIS LINE
+    token: sessionData.session.access_token, 
     patient: {
       id: patientProfile.id,
       name: full_name,
       cancer_type,
       oncologist_id: oncologist.id
     }
-   });
+  });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
