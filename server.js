@@ -11,6 +11,10 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
 const PDFDocument = require('pdfkit');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
 
 dotenv.config();
 
@@ -22,6 +26,41 @@ const PORT = process.env.PORT || 3000;
 // ────────────────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const timestamp = Date.now();
+    const originalName = path.parse(file.originalname).name;
+    const ext = path.extname(file.originalname);
+    cb(null, `${originalName}-${timestamp}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB max
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      'image/jpeg',
+      'image/png',
+      'application/pdf'
+    ];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Invalid file type. Allowed: JPG, PNG, PDF`));
+    }
+  }
+});
 
 // ────────────────────────────────────────────────────────────────────────────
 // SUPABASE CLIENT
@@ -1156,7 +1195,6 @@ app.post('/api/consultations/open-window', verifyAuth, async (req, res) => {
 });
 
 // POST /api/consultations/verify-payment — Verify Paystack payment and create window
-// POST /api/consultations/verify-payment — Verify Paystack payment and create window
 app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
   try {
     const { reference, payment_id } = req.body;
@@ -1253,6 +1291,256 @@ app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('Verify payment error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/doctors/:id/profile — Fetch doctor profile
+app.get('/api/doctors/:id/profile', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify doctor owns this profile
+    const { data: doctor, error: doctorError } = await supabase
+      .from('oncologist_profile')
+      .select(`
+        id,
+        user_id,
+        mdcn_number,
+        hospital_affiliation,
+        specialty,
+        profile_photo_url,
+        signature_url,
+        letterhead_url,
+        bank_name,
+        bank_account_number,
+        bank_account_name,
+        is_verified
+      `)
+      .eq('id', id)
+      .single();
+
+    if (doctorError || !doctor) {
+      return res.status(404).json({ error: 'Doctor profile not found' });
+    }
+
+    // Verify authorization (user must be the doctor or admin)
+    if (doctor.user_id !== req.user.id && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Fetch auth_user data for name and email
+    const { data: authUser, error: authError } = await supabase
+      .from('auth_user')
+      .select('full_name, email, phone_number')
+      .eq('id', doctor.user_id)
+      .single();
+
+    if (authError) throw authError;
+
+    res.json({
+      doctor: {
+        id: doctor.id,
+        full_name: authUser?.full_name,
+        email: authUser?.email,
+        phone_number: authUser?.phone_number,
+        mdcn_number: doctor.mdcn_number,
+        hospital: doctor.hospital_affiliation,
+        specialty: doctor.specialty,
+        profile_photo_url: doctor.profile_photo_url,
+        signature_url: doctor.signature_url,
+        letterhead_url: doctor.letterhead_url,
+        bank_name: doctor.bank_name,
+        bank_account_number: doctor.bank_account_number,
+        bank_account_name: doctor.bank_account_name,
+        is_verified: doctor.is_verified
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching profile:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/doctors/:id/profile — Update doctor profile
+app.put('/api/doctors/:id/profile', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { full_name, email, phone_number, hospital, specialty, bank_name, bank_account_number, bank_account_name } = req.body;
+
+    // Verify doctor owns this profile
+    const { data: doctor, error: doctorError } = await supabase
+      .from('oncologist_profile')
+      .select('user_id')
+      .eq('id', id)
+      .single();
+
+    if (doctorError || !doctor) {
+      return res.status(404).json({ error: 'Doctor profile not found' });
+    }
+
+    if (doctor.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Update auth_user table
+    if (full_name || email || phone_number) {
+      const { error: authUpdateError } = await supabase
+        .from('auth_user')
+        .update({
+          full_name: full_name || undefined,
+          email: email || undefined,
+          phone_number: phone_number || undefined,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', doctor.user_id);
+
+      if (authUpdateError) throw authUpdateError;
+    }
+
+    // Update oncologist_profile table
+    const { data: updatedDoctor, error: updateError } = await supabase
+      .from('oncologist_profile')
+      .update({
+        hospital_affiliation: hospital || undefined,
+        specialty: specialty || undefined,
+        bank_name: bank_name || undefined,
+        bank_account_number: bank_account_number || undefined,
+        bank_account_name: bank_account_name || undefined,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    res.json({
+      message: 'Profile updated successfully',
+      doctor: {
+        id: updatedDoctor.id,
+        full_name,
+        email,
+        phone_number,
+        hospital: updatedDoctor.hospital_affiliation,
+        specialty: updatedDoctor.specialty,
+        bank_name: updatedDoctor.bank_name,
+        bank_account_number: updatedDoctor.bank_account_number,
+        bank_account_name: updatedDoctor.bank_account_name
+      }
+    });
+  } catch (err) {
+    console.error('Error updating profile:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/doctors/:id/upload-file — Upload profile photo, signature, or letterhead
+app.post('/api/doctors/:id/upload-file', verifyAuth, upload.single('file'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { file_type } = req.body;
+
+    if (!file_type || !['profile_photo', 'signature', 'letterhead'].includes(file_type)) {
+      return res.status(400).json({ error: 'Invalid file_type. Must be: profile_photo, signature, or letterhead' });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file provided' });
+    }
+
+    // Verify doctor owns this profile
+    const { data: doctor, error: doctorError } = await supabase
+      .from('oncologist_profile')
+      .select('user_id')
+      .eq('id', id)
+      .single();
+
+    if (doctorError || !doctor) {
+      // Clean up uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ error: 'Doctor profile not found' });
+    }
+
+    if (doctor.user_id !== req.user.id) {
+      // Clean up uploaded file
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Upload file to Supabase Storage
+    const bucket = 'doctor-documents';
+    const filePath = `${id}/${file_type}-${Date.now()}${path.extname(req.file.filename)}`;
+    
+    const fileContent = fs.readFileSync(req.file.path);
+    
+    const { data: uploadData, error: uploadError } = await supabase
+      .storage
+      .from(bucket)
+      .upload(filePath, fileContent, {
+        contentType: req.file.mimetype,
+        upsert: false
+      });
+
+    if (uploadError) {
+      // Clean up uploaded file
+      fs.unlinkSync(req.file.path);
+      throw uploadError;
+    }
+
+    // Get public URL
+    const { data: urlData } = supabase
+      .storage
+      .from(bucket)
+      .getPublicUrl(filePath);
+
+    const publicUrl = urlData.publicUrl;
+
+    // Update database with file URL
+    const updateData = {};
+    if (file_type === 'profile_photo') {
+      updateData.profile_photo_url = publicUrl;
+    } else if (file_type === 'signature') {
+      updateData.signature_url = publicUrl;
+    } else if (file_type === 'letterhead') {
+      updateData.letterhead_url = publicUrl;
+    }
+
+    updateData.updated_at = new Date().toISOString();
+
+    const { data: updatedDoctor, error: updateError } = await supabase
+      .from('oncologist_profile')
+      .update(updateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (updateError) {
+      // Clean up uploaded file
+      fs.unlinkSync(req.file.path);
+      throw updateError;
+    }
+
+    // Clean up local temp file
+    fs.unlinkSync(req.file.path);
+
+    res.json({
+      message: `${file_type.replace(/_/g, ' ')} uploaded successfully`,
+      file_type,
+      url: publicUrl,
+      doctor: {
+        id: updatedDoctor.id,
+        profile_photo_url: updatedDoctor.profile_photo_url,
+        signature_url: updatedDoctor.signature_url,
+        letterhead_url: updatedDoctor.letterhead_url
+      }
+    });
+  } catch (err) {
+    // Clean up uploaded file if it exists
+    if (req.file?.path && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    console.error('Error uploading file:', err);
     res.status(500).json({ error: err.message });
   }
 });

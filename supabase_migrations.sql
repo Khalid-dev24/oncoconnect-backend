@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS public.oncologist_profile (
 );
 
 ALTER TABLE public.oncologist_profile ENABLE ROW LEVEL SECURITY;
+ADD COLUMN profile_photo_url TEXT;
+CREATE INDEX idx_oncologist_user ON public.oncologist_profile(user_id);
 
 CREATE POLICY "Oncologists see only their own profile" ON public.oncologist_profile
   FOR SELECT USING (user_id = auth.uid());
