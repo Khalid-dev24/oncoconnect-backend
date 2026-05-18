@@ -1,6 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // ONCOCONNECT BACKEND SERVER
 // ════════════════════════════════════════════════════════════════════════════
+require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
@@ -14,6 +15,7 @@ const PDFDocument = require('pdfkit');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const notificationRoutes = require('./routes/notifications');
 
 
 dotenv.config();
@@ -26,6 +28,7 @@ const PORT = process.env.PORT || 3000;
 // ────────────────────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
+app.use('/api/notifications', notificationRoutes);
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -788,9 +791,9 @@ app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => 
 // POST /api/patients/register-with-code — Patient joins via invite code
 app.post('/api/patients/register-with-code', async (req, res) => {
   try {
-    const { phone_number, full_name, invite_code, cancer_type, cancer_stage } = req.body;
+    const { phone_number, full_name, invite_code, cancer_type, cancer_stage, email } = req.body;
 
-    if (!phone_number || !full_name || !invite_code) {
+    if (!phone_number || !full_name || !invite_code || !email ) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
@@ -805,7 +808,7 @@ app.post('/api/patients/register-with-code', async (req, res) => {
 
     // Create Supabase auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email: `${phone_number}@oncoconnect.local`,
+      email: email,
       password: crypto.randomBytes(16).toString('hex'),
       email_confirm: true,
       user_metadata: { phone: phone_number, role: 'patient' }
@@ -820,6 +823,7 @@ app.post('/api/patients/register-with-code', async (req, res) => {
         id: authData.user.id,
         role: 'patient',
         phone_number,
+        email,
         full_name
       });
 
@@ -829,6 +833,7 @@ app.post('/api/patients/register-with-code', async (req, res) => {
       .insert({
         user_id: authData.user.id,
         assigned_oncologist_id: oncologist.id,
+        email,
         cancer_type,
         cancer_stage
       })
@@ -1160,7 +1165,7 @@ app.post('/api/consultations/open-window', verifyAuth, async (req, res) => {
       .from('patient_profile')
       .select('assigned_oncologist_id')
       .eq('id', patient_id)
-      .eq('user_id', req.user.user_id)
+      .eq('user_id', req.user.id)
       .single();
 
     if (!patient) return res.status(403).json({ error: 'Unauthorized' });
@@ -1216,7 +1221,7 @@ app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
       .from('patient_profile')
       .select('id')
       .eq('id', payment.patient_id)
-      .eq('user_id', req.user.user_id)
+      .eq('user_id', req.user.id)
       .single();
 
     if (!patient) return res.status(403).json({ error: 'Unauthorized' });
