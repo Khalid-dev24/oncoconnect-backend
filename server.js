@@ -811,7 +811,7 @@ app.post('/api/patients/register-with-code', async (req, res) => {
     // Verify invite code exists and get oncologist
     const { data: oncologist } = await supabase
       .from('oncologist_profile')
-      .select('id')
+      .select('id, full_name')
       .eq('invite_code', invite_code)
       .single();
 
@@ -871,7 +871,8 @@ app.post('/api/patients/register-with-code', async (req, res) => {
         id: patientProfile.id,
         name: full_name,
         cancer_type,
-        oncologist_id: oncologist.id
+        oncologist_id: oncologist.id,
+        oncologist_name: oncologist.full_name
       }
     });
   } catch (err) {
@@ -901,9 +902,22 @@ app.post('/api/patients/login', async (req, res) => {
     // Get patient profile
     const { data: patient } = await supabase
       .from('patient_profile')
-      .select('id, cancer_type, cancer_stage')
+      .select('id, cancer_type, cancer_stage, assigned_oncologist_id')
       .eq('user_id', authUser.id)
       .single();
+
+    // Get oncologist name
+    let oncologist_name = 'Your Doctor';
+    if (patient.assigned_oncologist_id) {
+      const { data: oncologist } = await supabase
+        .from('oncologist_profile')
+        .select('full_name')
+        .eq('id', patient.assigned_oncologist_id)
+        .single();
+      if (oncologist) {
+        oncologist_name = oncologist.full_name;
+      }
+    }
 
     // Generate JWT token
     const token = jwt.sign(
@@ -922,7 +936,8 @@ app.post('/api/patients/login', async (req, res) => {
       patient: {
         id: patient.id,
         name: authUser.full_name,
-        cancer_type: patient.cancer_type
+        cancer_type: patient.cancer_type,
+        oncologist_name: oncologist_name
       }
     });
   } catch (err) {
