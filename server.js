@@ -853,7 +853,6 @@ app.post('/api/patients/register-with-code', async (req, res) => {
       .insert({
         user_id: authData.user.id,
         assigned_oncologist_id: oncologist.id,
-        email,
         cancer_type,
         cancer_stage
       })
