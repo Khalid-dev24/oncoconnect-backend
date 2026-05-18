@@ -811,11 +811,20 @@ app.post('/api/patients/register-with-code', async (req, res) => {
     // Verify invite code exists and get oncologist
     const { data: oncologist } = await supabase
       .from('oncologist_profile')
-      .select('id, full_name')
+      .select('id, user_id, invite_code')
       .eq('invite_code', invite_code)
       .single();
 
     if (!oncologist) return res.status(400).json({ error: 'Invalid invite code' });
+
+    // Get oncologist's full name from auth_user
+    const { data: oncologistUser } = await supabase
+      .from('auth_user')
+      .select('full_name')
+      .eq('id', oncologist.user_id)
+      .single();
+
+    const oncologistName = oncologistUser?.full_name || 'Your Doctor';
 
     // Create Supabase auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -872,7 +881,7 @@ app.post('/api/patients/register-with-code', async (req, res) => {
         name: full_name,
         cancer_type,
         oncologist_id: oncologist.id,
-        oncologist_name: oncologist.full_name
+        oncologist_name: oncologistName
       }
     });
   } catch (err) {
@@ -911,11 +920,20 @@ app.post('/api/patients/login', async (req, res) => {
     if (patient.assigned_oncologist_id) {
       const { data: oncologist } = await supabase
         .from('oncologist_profile')
-        .select('full_name')
+        .select('user_id')
         .eq('id', patient.assigned_oncologist_id)
         .single();
+      
       if (oncologist) {
-        oncologist_name = oncologist.full_name;
+        const { data: oncologistUser } = await supabase
+          .from('auth_user')
+          .select('full_name')
+          .eq('id', oncologist.user_id)
+          .single();
+        
+        if (oncologistUser) {
+          oncologist_name = oncologistUser.full_name;
+        }
       }
     }
 
