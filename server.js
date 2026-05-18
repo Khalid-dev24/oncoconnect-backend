@@ -34,6 +34,11 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+const prescriptionsDir = path.join(uploadDir, 'prescriptions');
+if (!fs.existsSync(prescriptionsDir)) {
+  fs.mkdirSync(prescriptionsDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadDir);
@@ -83,8 +88,14 @@ function verifyAuth(req, res, next) {
     return res.status(401).json({ error: 'No token provided' });
   }
   
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    console.error('JWT_SECRET is not set in environment variables');
+    return res.status(500).json({ error: 'Server misconfiguration' });
+  }
+  
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const decoded = jwt.verify(token, secret);
     req.user = {
       id: decoded.user_id,          
       doctor_id: decoded.doctor_id,

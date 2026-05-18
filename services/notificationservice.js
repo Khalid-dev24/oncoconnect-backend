@@ -2,7 +2,7 @@
 // Complete Notification Service - Email + Prescriptions (No SMS)
 
 const EmailService = require('./emailservice');
-const PrescriptionService = require('./prescriptionService');
+const PrescriptionService = require('./prescriptionservice');
 
 class NotificationService {
   /**

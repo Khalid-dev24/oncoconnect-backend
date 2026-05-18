@@ -1,7 +1,7 @@
 // backend/routes/notifications.js
 const express = require('express');
-const NotificationService = require('../services/notificationService');
-const PrescriptionService = require('../services/prescriptionService');
+const NotificationService = require('../services/notificationservice');
+const PrescriptionService = require('../services/prescriptionservice');
 
 const router = express.Router();
 
