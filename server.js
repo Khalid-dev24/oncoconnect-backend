@@ -16,6 +16,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const notificationRoutes = require('./routes/notifications');
+const EmailService = require('./services/emailservice');
 
 
 dotenv.config();
@@ -871,6 +872,19 @@ app.post('/api/patients/register-with-code', async (req, res) => {
       process.env.JWT_SECRET || 'your-secret-key',
       { expiresIn: '30d' }
     );
+
+    // Send welcome email (asynchronously, don't wait)
+    EmailService.sendPatientWelcomeEmail(email, full_name, oncologistName)
+      .then(result => {
+        if (result.success) {
+          console.log('✓ Welcome email sent to', email);
+        } else {
+          console.warn('⚠️ Welcome email failed for', email, ':', result.error);
+        }
+      })
+      .catch(err => {
+        console.error('Email service error:', err.message);
+      });
 
     res.status(201).json({
       message: 'Patient registered successfully',
