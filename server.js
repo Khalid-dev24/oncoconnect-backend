@@ -22,7 +22,7 @@ const EmailService = require('./services/emailservice');
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 
 // ────────────────────────────────────────────────────────────────────────────
 // MIDDLEWARE
@@ -803,20 +803,34 @@ app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => 
 // POST /api/patients/register-with-code — Patient joins via invite code
 app.post('/api/patients/register-with-code', async (req, res) => {
   try {
+    console.log('\n════════════════════════════════════════════════════════');
+    console.log('🔵 [REGISTRATION] Received registration request');
     const { phone_number, full_name, invite_code, cancer_type, cancer_stage, email } = req.body;
+    console.log('📝 [REGISTRATION] Payload:', { phone_number, full_name, email, invite_code });
 
     if (!phone_number || !full_name || !invite_code || !email ) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     // Verify invite code exists and get oncologist
-    const { data: oncologist } = await supabase
+    console.log('🔍 [REGISTRATION] Verifying invite code:', invite_code);
+    const { data: oncologist, error: oncologistError } = await supabase
       .from('oncologist_profile')
       .select('id, user_id, invite_code')
       .eq('invite_code', invite_code)
       .single();
 
-    if (!oncologist) return res.status(400).json({ error: 'Invalid invite code' });
+    if (oncologistError) {
+      console.error('❌ [REGISTRATION] Invite code lookup failed:', oncologistError.message);
+      return res.status(400).json({ error: 'Invalid invite code' });
+    }
+
+    if (!oncologist) {
+      console.error('❌ [REGISTRATION] Oncologist not found for code:', invite_code);
+      return res.status(400).json({ error: 'Invalid invite code' });
+    }
+
+    console.log('✅ [REGISTRATION] Found oncologist:', oncologist.id);
 
     // Get oncologist's full name from auth_user
     const { data: oncologistUser } = await supabase
@@ -828,6 +842,7 @@ app.post('/api/patients/register-with-code', async (req, res) => {
     const oncologistName = oncologistUser?.full_name || 'Your Doctor';
 
     // Create Supabase auth user
+    console.log('🔐 [REGISTRATION] Creating Supabase auth user for email:', email);
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email: email,
       password: crypto.randomBytes(16).toString('hex'),
@@ -835,10 +850,16 @@ app.post('/api/patients/register-with-code', async (req, res) => {
       user_metadata: { phone: phone_number, role: 'patient' }
     });
 
-    if (authError) throw authError;
+    if (authError) {
+      console.error('❌ [REGISTRATION] Supabase auth creation failed:', authError.message);
+      throw authError;
+    }
 
-    // Create auth_user
-    await supabase
+    console.log('✅ [REGISTRATION] Supabase auth user created:', authData.user.id);
+
+    // Create auth_user table record
+    console.log('📝 [REGISTRATION] Creating auth_user table record with ID:', authData.user.id);
+    const { data: authUserData, error: authUserError } = await supabase
       .from('auth_user')
       .insert({
         id: authData.user.id,
@@ -846,9 +867,19 @@ app.post('/api/patients/register-with-code', async (req, res) => {
         phone_number,
         email,
         full_name
-      });
+      })
+      .select();
+
+    if (authUserError) {
+      console.error('❌ [REGISTRATION] auth_user insert failed:', authUserError.message);
+      console.error('   Full error:', JSON.stringify(authUserError, null, 2));
+      throw authUserError;
+    }
+
+    console.log('✅ [REGISTRATION] auth_user record created');
 
     // Create patient_profile
+    console.log('📝 [REGISTRATION] Creating patient_profile with user_id:', authData.user.id);
     const { data: patientProfile, error: profileError } = await supabase
       .from('patient_profile')
       .insert({
@@ -860,7 +891,13 @@ app.post('/api/patients/register-with-code', async (req, res) => {
       .select()
       .single();
 
-    if (profileError) throw profileError;
+    if (profileError) {
+      console.error('❌ [REGISTRATION] patient_profile insert failed:', profileError.message);
+      console.error('   Full error:', JSON.stringify(profileError, null, 2));
+      throw profileError;
+    }
+
+    console.log('✅ [REGISTRATION] patient_profile created:', patientProfile.id);
     
     // Generate JWT token
     const token = jwt.sign(
@@ -874,16 +911,24 @@ app.post('/api/patients/register-with-code', async (req, res) => {
     );
 
     // Send welcome email (asynchronously, don't wait)
+    console.log('📧 Attempting to send welcome email to:', email);
+    console.log('Email config:', {
+      service: process.env.EMAIL_SERVICE,
+      sender: process.env.EMAIL_ADDRESS,
+      hasPassword: !!process.env.EMAIL_PASSWORD
+    });
+    
     EmailService.sendPatientWelcomeEmail(email, full_name, oncologistName)
       .then(result => {
         if (result.success) {
-          console.log('✓ Welcome email sent to', email);
+          console.log('✅ Welcome email sent to', email, 'MessageID:', result.messageId);
         } else {
-          console.warn('⚠️ Welcome email failed for', email, ':', result.error);
+          console.error('❌ Welcome email FAILED for', email, '- Error:', result.error);
         }
       })
       .catch(err => {
-        console.error('Email service error:', err.message);
+        console.error('❌ Email service error for', email, ':', err.message);
+        console.error('Stack:', err.stack);
       });
 
     res.status(201).json({
@@ -1869,6 +1914,7 @@ app.put('/api/alerts/:id/resolve', verifyAuth, async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
+
 
 // ════════════════════════════════════════════════════════════════════════════
 // START SERVER

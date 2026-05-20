@@ -3,9 +3,11 @@
 
 const nodemailer = require('nodemailer');
 
-// Configure email transporter (using Gmail or SendGrid)
+// Configure email transporter (using Gmail with explicit TLS settings)
 const transporter = nodemailer.createTransport({
-  service: process.env.EMAIL_SERVICE || 'gmail',
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false, // TLS (not SSL)
   auth: {
     user: process.env.EMAIL_ADDRESS,
     pass: process.env.EMAIL_PASSWORD, 
@@ -21,6 +23,8 @@ class EmailService {
    */
   static async sendEmail(to, subject, htmlContent, textContent = '') {
     try {
+      console.log('📬 Preparing email:', { to, subject, service: process.env.EMAIL_SERVICE });
+      
       const mailOptions = {
         from: `${COMPANY_NAME} <${COMPANY_EMAIL}>`,
         to: to,
@@ -29,14 +33,18 @@ class EmailService {
         text: textContent || htmlContent.replace(/<[^>]*>/g, ''), // Fallback plain text
       };
 
+      console.log('📤 Sending via:', `${process.env.EMAIL_SERVICE} as ${COMPANY_EMAIL}`);
       const info = await transporter.sendMail(mailOptions);
+      console.log('✅ Email sent successfully. MessageID:', info.messageId);
       return {
         success: true,
         messageId: info.messageId,
         response: info,
       };
     } catch (error) {
-      console.error('Email sending error:', error.message);
+      console.error('❌ Email sending failed:', error.message);
+      console.error('Error code:', error.code);
+      console.error('Error response:', error.response);
       return {
         success: false,
         error: error.message,
