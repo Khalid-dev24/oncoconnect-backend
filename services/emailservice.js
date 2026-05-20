@@ -36,12 +36,12 @@ class EmailService {
         },
         content: [
           {
-            type: 'text/html',
-            value: htmlContent,
-          },
-          {
             type: 'text/plain',
             value: textContent || htmlContent.replace(/<[^>]*>/g, ''),
+          },
+          {
+            type: 'text/html',
+            value: htmlContent,
           },
         ],
       };
