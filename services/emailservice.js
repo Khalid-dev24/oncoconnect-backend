@@ -1,50 +1,71 @@
 // backend/services/emailService.js
 // Email Notification Service
 
-const nodemailer = require('nodemailer');
+const axios = require('axios');
 
-// Configure email transporter (using Gmail with explicit TLS settings)
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,
-  secure: false, // TLS (not SSL)
-  auth: {
-    user: process.env.EMAIL_ADDRESS,
-    pass: process.env.EMAIL_PASSWORD, 
-  },
-});
-
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 const COMPANY_EMAIL = process.env.EMAIL_ADDRESS || 'noreply@oncoconnect.ng';
 const COMPANY_NAME = 'OncoConnect';
 
 class EmailService {
   /**
-   * Send email
+   * Send email via SendGrid API
    */
   static async sendEmail(to, subject, htmlContent, textContent = '') {
     try {
-      console.log('📬 Preparing email:', { to, subject, service: process.env.EMAIL_SERVICE });
+      if (!SENDGRID_API_KEY) {
+        console.error('❌ SENDGRID_API_KEY not set in environment variables');
+        return {
+          success: false,
+          error: 'Email service not configured',
+        };
+      }
+
+      console.log('📬 Preparing email via SendGrid:', { to, subject });
       
-      const mailOptions = {
-        from: `${COMPANY_NAME} <${COMPANY_EMAIL}>`,
-        to: to,
-        subject: subject,
-        html: htmlContent,
-        text: textContent || htmlContent.replace(/<[^>]*>/g, ''), // Fallback plain text
+      const payload = {
+        personalizations: [
+          {
+            to: [{ email: to }],
+            subject: subject,
+          },
+        ],
+        from: {
+          email: COMPANY_EMAIL,
+          name: COMPANY_NAME,
+        },
+        content: [
+          {
+            type: 'text/html',
+            value: htmlContent,
+          },
+          {
+            type: 'text/plain',
+            value: textContent || htmlContent.replace(/<[^>]*>/g, ''),
+          },
+        ],
       };
 
-      console.log('📤 Sending via:', `${process.env.EMAIL_SERVICE} as ${COMPANY_EMAIL}`);
-      const info = await transporter.sendMail(mailOptions);
-      console.log('✅ Email sent successfully. MessageID:', info.messageId);
+      console.log('📤 Sending via SendGrid as:', COMPANY_EMAIL);
+      const response = await axios.post('https://api.sendgrid.com/v3/mail/send', payload, {
+        headers: {
+          Authorization: `Bearer ${SENDGRID_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      });
+
+      console.log('✅ Email sent successfully via SendGrid');
       return {
         success: true,
-        messageId: info.messageId,
-        response: info,
+        messageId: response.headers['x-message-id'] || 'sent',
+        response: response.data,
       };
     } catch (error) {
       console.error('❌ Email sending failed:', error.message);
-      console.error('Error code:', error.code);
-      console.error('Error response:', error.response);
+      if (error.response) {
+        console.error('SendGrid error:', error.response.data);
+      }
       return {
         success: false,
         error: error.message,
