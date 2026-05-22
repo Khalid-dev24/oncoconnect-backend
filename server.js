@@ -17,6 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const notificationRoutes = require('./routes/notifications');
 const EmailService = require('./services/emailservice');
+const adminRoutes = require('./routes/admin');
 
 
 dotenv.config();
@@ -30,6 +31,7 @@ const PORT = process.env.PORT || 4000;
 app.use(cors());
 app.use(express.json());
 app.use('/api/notifications', notificationRoutes);
+app.use(adminRoutes);
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
