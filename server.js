@@ -1255,6 +1255,240 @@ app.put('/api/messages/:id/read', verifyAuth, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Conversation wrapper endpoints (maps to consultation_window + message)
+// These provide a simpler 'conversation' abstraction for the doctor UI.
+// ---------------------------------------------------------------------------
+
+// GET /api/doctors/:doctorId/conversations — list conversations for doctor
+app.get('/api/doctors/:doctorId/conversations', verifyAuth, async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+
+    // Only allow the logged-in doctor to fetch their conversations
+    if (String(req.user.doctor_id) !== String(doctorId)) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Fetch consultation windows for this doctor
+    const { data: windows } = await supabase
+      .from('consultation_window')
+      .select('id, patient_id, status, created_at, expires_at')
+      .eq('oncologist_id', doctorId)
+      .order('created_at', { ascending: false });
+
+    const convs = await Promise.all((windows || []).map(async (w) => {
+      // Get patient name
+      const { data: patient } = await supabase
+        .from('patient_profile')
+        .select('id, user_id, auth_user(full_name)')
+        .eq('id', w.patient_id)
+        .single();
+
+      const patientName = patient?.auth_user?.full_name || null;
+
+      // Get last message
+      const { data: lastMsg } = await supabase
+        .from('message')
+        .select('id, body, sender_id, sent_at, auth_user(role)')
+        .eq('window_id', w.id)
+        .order('sent_at', { ascending: false })
+        .limit(1);
+
+      const lastMessage = lastMsg?.[0]
+        ? {
+            id: lastMsg[0].id,
+            text: lastMsg[0].body,
+            sender: lastMsg[0].auth_user?.role === 'oncologist' ? 'doctor' : 'patient',
+            created_at: lastMsg[0].sent_at
+          }
+        : null;
+
+      // Unread count (messages not read and not sent by this doctor)
+      const { data: unreadMessages } = await supabase
+        .from('message')
+        .select('id')
+        .eq('window_id', w.id)
+        .is('read_at', null)
+        .neq('sender_id', req.user.id);
+
+      return {
+        id: w.id,
+        patient_id: w.patient_id,
+        patient_name: patientName,
+        status: w.status,
+        last_message: lastMessage,
+        unread_count: (unreadMessages && unreadMessages.length) || 0,
+        created_at: w.created_at
+      };
+    }));
+
+    res.json({ conversations: convs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/conversations — create (or return existing) conversation for patient+doctor
+app.post('/api/conversations', verifyAuth, async (req, res) => {
+  try {
+    const { patient_id, doctor_id } = req.body;
+
+    if (!patient_id || !doctor_id) return res.status(400).json({ error: 'patient_id and doctor_id required' });
+
+    if (String(req.user.doctor_id) !== String(doctor_id)) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Check existing window
+    const { data: existing } = await supabase
+      .from('consultation_window')
+      .select('*')
+      .eq('patient_id', patient_id)
+      .eq('oncologist_id', doctor_id)
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      const conv = existing[0];
+      const { data: patient } = await supabase
+        .from('patient_profile')
+        .select('auth_user(full_name)')
+        .eq('id', conv.patient_id)
+        .single();
+
+      return res.json({ conversation: {
+        id: conv.id,
+        patient_id: conv.patient_id,
+        patient_name: patient?.auth_user?.full_name || null,
+        status: conv.status,
+        created_at: conv.created_at
+      }});
+    }
+
+    // Create new consultation window
+    const { data: created, error } = await supabase
+      .from('consultation_window')
+      .insert([{ patient_id, oncologist_id: doctor_id, status: 'active', created_at: new Date().toISOString() }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    const { data: patient } = await supabase
+      .from('patient_profile')
+      .select('auth_user(full_name)')
+      .eq('id', patient_id)
+      .single();
+
+    res.status(201).json({ conversation: {
+      id: created.id,
+      patient_id: created.patient_id,
+      patient_name: patient?.auth_user?.full_name || null,
+      status: created.status,
+      created_at: created.created_at
+    }});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/conversations/:id/messages — wrapper for consultation messages
+app.get('/api/conversations/:id/messages', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Reuse existing consultation verification logic
+    const { data: window } = await supabase
+      .from('consultation_window')
+      .select('id, patient_id, oncologist_id, patient_profile(user_id), oncologist_profile(user_id)')
+      .eq('id', id)
+      .single();
+
+    if (!window) return res.status(404).json({ error: 'Conversation not found' });
+
+    const isPatient = window.patient_profile?.user_id === req.user.id;
+    const isOncologist = window.oncologist_profile?.user_id === req.user.id;
+    if (!isPatient && !isOncologist) return res.status(403).json({ error: 'Unauthorized' });
+
+    const { data: messages, error } = await supabase
+      .from('message')
+      .select('id, sender_id, body, attachment_url, sent_at, read_at, auth_user(full_name, role)')
+      .eq('window_id', id)
+      .order('sent_at', { ascending: true });
+
+    if (error) throw error;
+
+    const mappedMessages = (messages || []).map((msg) => {
+      const role = msg.auth_user?.role || (msg.sender_id === req.user.id ? req.user.role : null);
+      const senderType = role === 'oncologist' || role === 'doctor' ? 'doctor' : 'patient';
+      return {
+        id: msg.id,
+        text: msg.body,
+        sender: senderType,
+        attachment_url: msg.attachment_url,
+        created_at: msg.sent_at,
+        read_at: msg.read_at,
+      };
+    });
+
+    res.json({ conversation_id: id, messages: mappedMessages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/conversations/:id/messages — send message in conversation
+app.post('/api/conversations/:id/messages', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { text, sender } = req.body;
+
+    if (!text) return res.status(400).json({ error: 'text required' });
+
+    // Ensure user is part of the consultation window
+    const { data: window } = await supabase
+      .from('consultation_window')
+      .select('id, patient_profile(user_id), oncologist_profile(user_id)')
+      .eq('id', id)
+      .single();
+
+    if (!window) return res.status(404).json({ error: 'Conversation not found' });
+
+    const isPatient = window.patient_profile?.user_id === req.user.id;
+    const isOncologist = window.oncologist_profile?.user_id === req.user.id;
+    if (!isPatient && !isOncologist) return res.status(403).json({ error: 'Unauthorized' });
+
+    const { data: message, error } = await supabase
+      .from('message')
+      .insert([{ window_id: id, sender_id: req.user.id, body: text }])
+      .select('id, sender_id, body, attachment_url, sent_at, read_at, auth_user(full_name, role)')
+      .single();
+
+    if (error) throw error;
+
+    // Update consultation_window updated_at
+    await supabase
+      .from('consultation_window')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', id);
+
+    const role = message.auth_user?.role || req.user.role;
+    const senderType = role === 'oncologist' || role === 'doctor' ? 'doctor' : 'patient';
+    const mappedMessage = {
+      id: message.id,
+      text: message.body,
+      sender: senderType,
+      attachment_url: message.attachment_url,
+      created_at: message.sent_at,
+      read_at: message.read_at,
+    };
+
+    res.status(201).json({ message: mappedMessage });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // CONSULTATION WINDOW & PAYMENT ENDPOINTS
 // ════════════════════════════════════════════════════════════════════════════
