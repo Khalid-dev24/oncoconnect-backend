@@ -15,6 +15,8 @@ const PDFDocument = require('pdfkit');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
+const { Server } = require('socket.io');
 const notificationRoutes = require('./routes/notifications');
 const EmailService = require('./services/emailservice');
 const adminRoutes = require('./routes/admin');
@@ -80,6 +82,87 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY 
 );
+
+// Create HTTP server and initialize Socket.IO for real-time messaging
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: process.env.FRONTEND_URL || process.env.REACT_APP_API_BASE_URL || '*',
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
+});
+
+// Socket authentication middleware (JWT)
+io.use((socket, next) => {
+  try {
+    const token =
+      socket.handshake.auth?.token ||
+      (socket.handshake.headers && socket.handshake.headers.authorization && socket.handshake.headers.authorization.split(' ')[1]);
+    if (!token) return next(new Error('Authentication error'));
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.user = {
+      id: decoded.user_id,
+      doctor_id: decoded.doctor_id,
+      role: decoded.role
+    };
+    return next();
+  } catch (err) {
+    console.error('Socket auth error:', err.message);
+    return next(new Error('Authentication error'));
+  }
+});
+
+// Handle socket connections
+io.on('connection', (socket) => {
+  console.log('🔌 Socket connected:', socket.id, 'user:', socket.user);
+
+  // Auto-join doctor's room if the token contains doctor_id
+  if (socket.user?.doctor_id) {
+    socket.join(`doctor:${socket.user.doctor_id}`);
+  }
+
+  // Join a consultation/window room when requested by client
+  socket.on('join_window', async ({ windowId }) => {
+    try {
+      const { data: window } = await supabase
+        .from('consultation_window')
+        .select('id, patient_id, oncologist_id, patient_profile(user_id), oncologist_profile(user_id)')
+        .eq('id', windowId)
+        .single();
+
+      if (!window) {
+        socket.emit('error', 'Window not found');
+        return;
+      }
+
+      const isPatient = window.patient_profile?.user_id === socket.user.id;
+      const isOncologist = window.oncologist_profile?.user_id === socket.user.id;
+
+      if (!isPatient && !isOncologist) {
+        socket.emit('error', 'Unauthorized to join window');
+        return;
+      }
+
+      socket.join(`window:${windowId}`);
+      socket.emit('joined_window', { windowId });
+    } catch (err) {
+      console.error('join_window error', err);
+      socket.emit('error', 'Server error joining window');
+    }
+  });
+
+  socket.on('leave_window', ({ windowId }) => {
+    socket.leave(`window:${windowId}`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Socket disconnected', socket.id);
+  });
+});
+
+// Make io available on the Express app (useful in routes/tests)
+app.set('io', io);
 
 // ────────────────────────────────────────────────────────────────────────────
 // AUTH MIDDLEWARE — Verify JWT from Supabase
@@ -1147,10 +1230,29 @@ app.post('/api/messages', verifyAuth, async (req, res) => {
 
     if (messageError) throw messageError;
 
+    const senderType = isOncologist ? 'doctor' : 'patient';
+    const mappedMessage = {
+      id: message.id,
+      text: message.body,
+      sender: senderType,
+      attachment_url: message.attachment_url,
+      created_at: message.sent_at,
+      read_at: message.read_at,
+      conversation_id: window_id
+    };
+
+    try {
+      io?.to(`window:${window_id}`).emit('new_message', mappedMessage);
+      if (window?.oncologist_id) io?.to(`doctor:${window.oncologist_id}`).emit('new_message', mappedMessage);
+    } catch (emitErr) {
+      console.error('Socket emit error:', emitErr);
+    }
+
     res.status(201).json({
       message_id: message.id,
       sent_at: message.sent_at,
-      message: 'Message sent successfully'
+      message: 'Message sent successfully',
+      message_obj: mappedMessage
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1448,7 +1550,7 @@ app.post('/api/conversations/:id/messages', verifyAuth, async (req, res) => {
     // Ensure user is part of the consultation window
     const { data: window } = await supabase
       .from('consultation_window')
-      .select('id, patient_profile(user_id), oncologist_profile(user_id)')
+      .select('id, patient_id, oncologist_id, patient_profile(user_id), oncologist_profile(user_id)')
       .eq('id', id)
       .single();
 
@@ -1482,6 +1584,15 @@ app.post('/api/conversations/:id/messages', verifyAuth, async (req, res) => {
       created_at: message.sent_at,
       read_at: message.read_at,
     };
+
+    // Emit real-time event to the window room and the doctor's room
+    try {
+      const withConv = { ...mappedMessage, conversation_id: id };
+      io?.to(`window:${id}`).emit('new_message', withConv);
+      if (window?.oncologist_id) io?.to(`doctor:${window.oncologist_id}`).emit('new_message', withConv);
+    } catch (emitErr) {
+      console.error('Socket emit error:', emitErr);
+    }
 
     res.status(201).json({ message: mappedMessage });
   } catch (err) {
@@ -2155,7 +2266,7 @@ app.get('/health', (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 // START SERVER
 // ════════════════════════════════════════════════════════════════════════════
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 OncoConnect backend running on http://localhost:${PORT}`);
   console.log(`📚 Supabase: ${process.env.SUPABASE_URL}`);
 });
