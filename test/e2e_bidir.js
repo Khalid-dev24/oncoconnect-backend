@@ -80,30 +80,32 @@ function rnd() { return Math.random().toString(36).slice(2, 9); }
     pSocket.emit('join_window', { windowId: window.id });
     dSocket.emit('join_window', { windowId: window.id });
 
-    // prepare promises
-    const patientReceived = new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('Patient did not receive doctor message')), 8000);
-      pSocket.on('new_message', (msg) => { clearTimeout(t); resolve(msg); });
-    });
+    // prepare promises with message tracking
+    let patientMsgs = [];
+    let doctorMsgs = [];
 
-    const doctorReceived = new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('Doctor did not receive patient message')), 8000);
-      dSocket.on('new_message', (msg) => { clearTimeout(t); resolve(msg); });
-    });
+    pSocket.on('new_message', (msg) => { patientMsgs.push(msg); });
+    dSocket.on('new_message', (msg) => { doctorMsgs.push(msg); });
 
     // doctor sends message via HTTP
     console.log('Doctor sending message via HTTP...');
     await axios.post(`${API_BASE}/api/conversations/${window.id}/messages`, { text: 'Hello from doctor' }, { headers: { Authorization: `Bearer ${doctorJWT}` } });
 
-    const pdMsg = await patientReceived;
-    console.log('Patient received:', pdMsg.text || pdMsg);
+    // wait for patient to receive
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const pdMsg = patientMsgs.find(m => m.text === 'Hello from doctor');
+    if (!pdMsg) throw new Error('Patient did not receive doctor message');
+    console.log('Patient received:', pdMsg.text);
 
     // patient sends message via HTTP
     console.log('Patient sending message via HTTP...');
     await axios.post(`${API_BASE}/api/conversations/${window.id}/messages`, { text: 'Hello from patient' }, { headers: { Authorization: `Bearer ${patientJWT}` } });
 
-    const dpMsg = await doctorReceived;
-    console.log('Doctor received:', dpMsg.text || dpMsg);
+    // wait for doctor to receive
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const dpMsg = doctorMsgs.find(m => m.text === 'Hello from patient');
+    if (!dpMsg) throw new Error('Doctor did not receive patient message');
+    console.log('Doctor received:', dpMsg.text);
 
     console.log('Bidirectional E2E success');
 
