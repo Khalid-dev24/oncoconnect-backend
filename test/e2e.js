@@ -43,7 +43,7 @@ function rnd() { return Math.random().toString(36).slice(2, 9); }
     console.log('Creating oncologist_profile...');
     const mdcn = `MD${stamp}`;
     const invite_code = `E2E${rnd()}`;
-    const { data: oncProfile } = await supabase.from('oncologist_profile').insert([{ user_id: doctorUserId, mdcn_number: mdcn, invite_code, hospital_affiliation: 'E2E Hospital' }]).select().single();
+    const { data: oncProfile } = await supabase.from('oncologist_profile').insert([{ user_id: doctorUserId, mdcn_number: mdcn, phone_number: `0800${stamp}`, invite_code, hospital_affiliation: 'E2E Hospital' }]).select().single();
 
     // 2) Create patient
     console.log('Creating patient auth.user...');

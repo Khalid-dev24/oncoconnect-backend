@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS public.oncologist_profile (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL UNIQUE REFERENCES public.auth_user ON DELETE CASCADE,
   mdcn_number TEXT UNIQUE NOT NULL,
+  phone_number TEXT,
   hospital_affiliation TEXT,
   specialty TEXT,
   invite_code TEXT UNIQUE NOT NULL,
@@ -66,6 +67,13 @@ CREATE POLICY "Oncologists see only their own profile" ON public.oncologist_prof
 
 CREATE POLICY "Oncologists can update their own profile" ON public.oncologist_profile
   FOR UPDATE USING (user_id = auth.uid());
+
+-- Backfill existing oncologist phone numbers from auth_user
+UPDATE public.oncologist_profile op
+SET phone_number = au.phone_number
+FROM public.auth_user au
+WHERE op.user_id = au.id
+AND op.phone_number IS NULL;
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- 3. PATIENT_PROFILE — Patient data linked to oncologist

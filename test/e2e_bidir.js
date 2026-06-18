@@ -35,7 +35,7 @@ function rnd() { return Math.random().toString(36).slice(2, 9); }
     if (docAuthErr) throw docAuthErr;
     const doctorUserId = docAuthData.user.id;
     const { data: docUser } = await supabase.from('auth_user').insert([{ id: doctorUserId, role: 'oncologist', phone_number: `0800${stamp}`, full_name: 'E2E Doctor', email: doctorEmail }]).select().single();
-    const { data: oncProfile } = await supabase.from('oncologist_profile').insert([{ user_id: doctorUserId, mdcn_number: `MD${stamp}`, invite_code: `E2E${rnd()}`, hospital_affiliation: 'E2E Hospital' }]).select().single();
+    const { data: oncProfile } = await supabase.from('oncologist_profile').insert([{ user_id: doctorUserId, mdcn_number: `MD${stamp}`, phone_number: `0800${stamp}`, invite_code: `E2E${rnd()}`, hospital_affiliation: 'E2E Hospital' }]).select().single();
 
     // create patient
     const { data: patAuthData, error: patAuthErr } = await supabase.auth.admin.createUser({
