@@ -722,6 +722,76 @@ app.post('/api/prescriptions', verifyAuth, async (req, res) => {
       .select();
 
     if (error) return res.status(400).json({ error: error.message });
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // SEND PRESCRIPTION NOTIFICATION
+    // ════════════════════════════════════════════════════════════════════════════
+    try {
+      // Fetch patient email and name
+      const { data: patientProfile } = await supabase
+        .from('patient_profile')
+        .select('user_id')
+        .eq('id', patient_id)
+        .single();
+
+      const { data: patientAuth } = await supabase
+        .from('auth_user')
+        .select('email, full_name')
+        .eq('id', patientProfile.user_id)
+        .single();
+
+      // Fetch doctor profile for MDCN and phone
+      const { data: doctorProfile } = await supabase
+        .from('oncologist_profile')
+        .select('mdcn_number, phone_number, user_id')
+        .eq('id', oncologist_id)
+        .single();
+
+      const { data: doctorAuth } = await supabase
+        .from('auth_user')
+        .select('email, full_name')
+        .eq('id', doctorProfile.user_id)
+        .single();
+
+      if (patientAuth && doctorAuth && doctorProfile) {
+        // Format medications array for email template
+        const medications = [{
+          name: drug_name,
+          dosage: dosage,
+          frequency: frequency
+        }];
+
+        // Call the notification endpoint
+        const notificationPayload = {
+          prescriptionID: data[0].id,
+          doctorName: doctorAuth.full_name,
+          doctorMDCN: doctorProfile.mdcn_number,
+          doctorPhone: doctorProfile.phone_number,
+          patientName: patientAuth.full_name,
+          patientEmail: patientAuth.email,
+          patientAge: 'N/A', // Could be fetched if stored
+          patientID: patient_id,
+          medications: medications,
+          notes: instructions || ''
+        };
+
+        try {
+          await axios.post(
+            `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/notifications/prescription-sent`,
+            notificationPayload,
+            { timeout: 5000 }
+          );
+          console.log('✅ Prescription sent notification sent to:', patientAuth.email);
+        } catch (notificationError) {
+          console.error('⚠️ Failed to send prescription notification:', notificationError.message);
+          // Don't fail the prescription creation if notification fails
+        }
+      }
+    } catch (notificationError) {
+      console.error('⚠️ Error preparing prescription notification:', notificationError.message);
+      // Don't fail the prescription creation if notification setup fails
+    }
+
     res.status(201).json({ prescription: data[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1659,7 +1729,7 @@ app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
     // Verify payment belongs to authenticated user
     const { data: payment } = await supabase
       .from('payment')
-      .select('patient_id, oncologist_id, status')
+      .select('patient_id, oncologist_id, status, amount_naira')
       .eq('id', payment_id)
       .single();
 
@@ -1668,7 +1738,7 @@ app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
     // Verify patient belongs to user
     const { data: patient } = await supabase
       .from('patient_profile')
-      .select('id')
+      .select('id, user_id')
       .eq('id', payment.patient_id)
       .eq('user_id', req.user.id)
       .single();
@@ -1734,6 +1804,60 @@ app.post('/api/consultations/verify-payment', verifyAuth, async (req, res) => {
       .single();
 
     if (windowError) throw windowError;
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // SEND NOTIFICATIONS (Email)
+    // ════════════════════════════════════════════════════════════════════════════
+    try {
+      // Fetch patient email and name
+      const { data: patientAuth } = await supabase
+        .from('auth_user')
+        .select('email, full_name')
+        .eq('id', patient.user_id)
+        .single();
+
+      // Fetch doctor email and name
+      const { data: doctorProfile } = await supabase
+        .from('oncologist_profile')
+        .select('user_id')
+        .eq('id', payment.oncologist_id)
+        .single();
+
+      const { data: doctorAuth } = await supabase
+        .from('auth_user')
+        .select('email, full_name')
+        .eq('id', doctorProfile.user_id)
+        .single();
+
+      if (patientAuth && doctorAuth) {
+        // Send notifications via the notification service
+        const notificationPayload = {
+          doctorEmail: doctorAuth.email,
+          doctorName: doctorAuth.full_name,
+          patientName: patientAuth.full_name,
+          patientEmail: patientAuth.email,
+          amount: payment.amount_naira,
+          windowHours: 48,
+          transactionID: payment_id,
+        };
+
+        // Call the notification endpoint
+        try {
+          await axios.post(
+            `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/notifications/consultation-opened`,
+            notificationPayload,
+            { timeout: 5000 }
+          );
+          console.log('✅ Consultation opened notifications sent');
+        } catch (notificationError) {
+          console.error('⚠️ Failed to send notifications:', notificationError.message);
+          // Don't fail the payment if notification fails - it's not critical
+        }
+      }
+    } catch (notificationError) {
+      console.error('⚠️ Error preparing notifications:', notificationError.message);
+      // Don't fail the payment if notification setup fails
+    }
 
     res.json({
       success: true,

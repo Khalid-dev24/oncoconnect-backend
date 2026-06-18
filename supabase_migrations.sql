@@ -27,9 +27,11 @@ CREATE TABLE IF NOT EXISTS public.auth_user (
 
 ALTER TABLE public.auth_user ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users see only their own profile" ON public.auth_user;
 CREATE POLICY "Users see only their own profile" ON public.auth_user
   FOR SELECT USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can update their own profile" ON public.auth_user;
 CREATE POLICY "Users can update their own profile" ON public.auth_user
   FOR UPDATE USING (auth.uid() = id);
 
@@ -59,14 +61,19 @@ CREATE TABLE IF NOT EXISTS public.oncologist_profile (
 );
 
 ALTER TABLE public.oncologist_profile ENABLE ROW LEVEL SECURITY;
-ADD COLUMN profile_photo_url TEXT;
-CREATE INDEX idx_oncologist_user ON public.oncologist_profile(user_id);
+CREATE INDEX IF NOT EXISTS idx_oncologist_user ON public.oncologist_profile(user_id);
 
+DROP POLICY IF EXISTS "Oncologists see only their own profile" ON public.oncologist_profile;
 CREATE POLICY "Oncologists see only their own profile" ON public.oncologist_profile
   FOR SELECT USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Oncologists can update their own profile" ON public.oncologist_profile;
 CREATE POLICY "Oncologists can update their own profile" ON public.oncologist_profile
   FOR UPDATE USING (user_id = auth.uid());
+
+-- Add phone_number column if it doesn't exist
+ALTER TABLE public.oncologist_profile
+ADD COLUMN IF NOT EXISTS phone_number TEXT;
 
 -- Backfill existing oncologist phone numbers from auth_user
 UPDATE public.oncologist_profile op
@@ -92,9 +99,11 @@ CREATE TABLE IF NOT EXISTS public.patient_profile (
 
 ALTER TABLE public.patient_profile ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see only their own profile" ON public.patient_profile;
 CREATE POLICY "Patients see only their own profile" ON public.patient_profile
   FOR SELECT USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Oncologists see their assigned patients" ON public.patient_profile;
 CREATE POLICY "Oncologists see their assigned patients" ON public.patient_profile
   FOR SELECT USING (
     assigned_oncologist_id IN (
@@ -102,6 +111,7 @@ CREATE POLICY "Oncologists see their assigned patients" ON public.patient_profil
     )
   );
 
+DROP POLICY IF EXISTS "Patients can update their own profile" ON public.patient_profile;
 CREATE POLICY "Patients can update their own profile" ON public.patient_profile
   FOR UPDATE USING (user_id = auth.uid());
 
@@ -126,11 +136,13 @@ CREATE TABLE IF NOT EXISTS public.payment (
 
 ALTER TABLE public.payment ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their own payments" ON public.payment;
 CREATE POLICY "Patients see their own payments" ON public.payment
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their earnings" ON public.payment;
 CREATE POLICY "Oncologists see their earnings" ON public.payment
   FOR SELECT USING (oncologist_id IN (
     SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid()
@@ -153,11 +165,13 @@ CREATE TABLE IF NOT EXISTS public.consultation_window (
 
 ALTER TABLE public.consultation_window ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their own consultation windows" ON public.consultation_window;
 CREATE POLICY "Patients see their own consultation windows" ON public.consultation_window
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their patients' consultation windows" ON public.consultation_window;
 CREATE POLICY "Oncologists see their patients' consultation windows" ON public.consultation_window
   FOR SELECT USING (oncologist_id IN (
     SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid()
@@ -179,6 +193,7 @@ CREATE TABLE IF NOT EXISTS public.message (
 
 ALTER TABLE public.message ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users in a consultation window see messages" ON public.message;
 CREATE POLICY "Users in a consultation window see messages" ON public.message
   FOR SELECT USING (
     window_id IN (
@@ -192,6 +207,7 @@ CREATE POLICY "Users in a consultation window see messages" ON public.message
     )
   );
 
+DROP POLICY IF EXISTS "Users can create messages in their windows" ON public.message;
 CREATE POLICY "Users can create messages in their windows" ON public.message
   FOR INSERT WITH CHECK (
     window_id IN (
@@ -228,11 +244,13 @@ CREATE TABLE IF NOT EXISTS public.prescription (
 
 ALTER TABLE public.prescription ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their prescriptions" ON public.prescription;
 CREATE POLICY "Patients see their prescriptions" ON public.prescription
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their prescriptions" ON public.prescription;
 CREATE POLICY "Oncologists see their prescriptions" ON public.prescription
   FOR SELECT USING (oncologist_id IN (
     SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid()
@@ -258,11 +276,13 @@ CREATE TABLE IF NOT EXISTS public.diagnostic_referral (
 
 ALTER TABLE public.diagnostic_referral ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their referrals" ON public.diagnostic_referral;
 CREATE POLICY "Patients see their referrals" ON public.diagnostic_referral
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their referrals" ON public.diagnostic_referral;
 CREATE POLICY "Oncologists see their referrals" ON public.diagnostic_referral
   FOR SELECT USING (oncologist_id IN (
     SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid()
@@ -284,11 +304,13 @@ CREATE TABLE IF NOT EXISTS public.symptom_log (
 
 ALTER TABLE public.symptom_log ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their own symptom logs" ON public.symptom_log;
 CREATE POLICY "Patients see their own symptom logs" ON public.symptom_log
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their patients' symptom logs" ON public.symptom_log;
 CREATE POLICY "Oncologists see their patients' symptom logs" ON public.symptom_log
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE assigned_oncologist_id IN (
@@ -317,11 +339,13 @@ CREATE TABLE IF NOT EXISTS public.medication (
 
 ALTER TABLE public.medication ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their medications" ON public.medication;
 CREATE POLICY "Patients see their medications" ON public.medication
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their patients' medications" ON public.medication;
 CREATE POLICY "Oncologists see their patients' medications" ON public.medication
   FOR SELECT USING (oncologist_id IN (
     SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid()
@@ -340,11 +364,13 @@ CREATE TABLE IF NOT EXISTS public.medication_log (
 
 ALTER TABLE public.medication_log ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their medication logs" ON public.medication_log;
 CREATE POLICY "Patients see their medication logs" ON public.medication_log
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their patients' medication logs" ON public.medication_log;
 CREATE POLICY "Oncologists see their patients' medication logs" ON public.medication_log
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE assigned_oncologist_id IN (
@@ -376,16 +402,19 @@ CREATE TABLE IF NOT EXISTS public.alert (
 
 ALTER TABLE public.alert ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Patients see their own alerts" ON public.alert;
 CREATE POLICY "Patients see their own alerts" ON public.alert
   FOR SELECT USING (patient_id IN (
     SELECT id FROM public.patient_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Oncologists see their patients' alerts" ON public.alert;
 CREATE POLICY "Oncologists see their patients' alerts" ON public.alert
   FOR SELECT USING (oncologist_id IN (
     SELECT id FROM public.oncologist_profile WHERE user_id = auth.uid()
   ));
 
+DROP POLICY IF EXISTS "Users can acknowledge/resolve alerts" ON public.alert;
 CREATE POLICY "Users can acknowledge/resolve alerts" ON public.alert
   FOR UPDATE USING (
     acknowledged_by = auth.uid() OR resolved_by = auth.uid() OR
@@ -396,18 +425,18 @@ CREATE POLICY "Users can acknowledge/resolve alerts" ON public.alert
 -- ────────────────────────────────────────────────────────────────────────────
 -- INDEXES FOR PERFORMANCE
 -- ────────────────────────────────────────────────────────────────────────────
-CREATE INDEX idx_patient_oncologist ON public.patient_profile(assigned_oncologist_id);
-CREATE INDEX idx_consultation_patient ON public.consultation_window(patient_id);
-CREATE INDEX idx_consultation_oncologist ON public.consultation_window(oncologist_id);
-CREATE INDEX idx_message_window ON public.message(window_id);
-CREATE INDEX idx_prescription_patient ON public.prescription(patient_id);
-CREATE INDEX idx_symptom_patient ON public.symptom_log(patient_id);
-CREATE INDEX idx_medication_patient ON public.medication(patient_id);
-CREATE INDEX idx_alert_patient ON public.alert(patient_id);
-CREATE INDEX idx_alert_oncologist ON public.alert(oncologist_id);
-CREATE INDEX idx_alert_status ON public.alert(status);
-CREATE INDEX idx_payment_oncologist ON public.payment(oncologist_id);
-CREATE INDEX idx_oncologist_invite_code ON public.oncologist_profile(invite_code);
+CREATE INDEX IF NOT EXISTS idx_patient_oncologist ON public.patient_profile(assigned_oncologist_id);
+CREATE INDEX IF NOT EXISTS idx_consultation_patient ON public.consultation_window(patient_id);
+CREATE INDEX IF NOT EXISTS idx_consultation_oncologist ON public.consultation_window(oncologist_id);
+CREATE INDEX IF NOT EXISTS idx_message_window ON public.message(window_id);
+CREATE INDEX IF NOT EXISTS idx_prescription_patient ON public.prescription(patient_id);
+CREATE INDEX IF NOT EXISTS idx_symptom_patient ON public.symptom_log(patient_id);
+CREATE INDEX IF NOT EXISTS idx_medication_patient ON public.medication(patient_id);
+CREATE INDEX IF NOT EXISTS idx_alert_patient ON public.alert(patient_id);
+CREATE INDEX IF NOT EXISTS idx_alert_oncologist ON public.alert(oncologist_id);
+CREATE INDEX IF NOT EXISTS idx_alert_status ON public.alert(status);
+CREATE INDEX IF NOT EXISTS idx_payment_oncologist ON public.payment(oncologist_id);
+CREATE INDEX IF NOT EXISTS idx_oncologist_invite_code ON public.oncologist_profile(invite_code);
 
 -- ────────────────────────────────────────────────────────────────────────────
 -- GRANT PERMISSIONS
