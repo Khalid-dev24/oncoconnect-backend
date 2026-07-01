@@ -35,6 +35,7 @@ app.use(express.json());
 app.use('/api/notifications', notificationRoutes);
 app.use(adminRoutes);
 const uploadDir = path.join(__dirname, 'uploads');
+app.use('/uploads', express.static(uploadDir));
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -940,13 +941,153 @@ app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => 
 
     // Generate PDF
     const pdfBuffer = await generatePrescriptionPDF(pdfData);
+    const pdfFileName = `prescription_${id}.pdf`;
+    const pdfFilePath = path.join(prescriptionsDir, pdfFileName);
+    fs.writeFileSync(pdfFilePath, pdfBuffer);
 
     // Set response headers for PDF download
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="prescription_${id}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${pdfFileName}"`);
     res.send(pdfBuffer);
   } catch (err) {
     console.error('PDF generation error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/prescriptions/:id/send-to-patient — Generate PDF and send it into the patient conversation
+app.post('/api/prescriptions/:id/send-to-patient', verifyAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { messageText } = req.body || {};
+
+    const { data: prescription, error: prescriptionError } = await supabase
+      .from('prescription')
+      .select(`
+        id,
+        drug_name,
+        dosage,
+        frequency,
+        duration,
+        instructions,
+        issued_at,
+        qr_verification_code,
+        patient_id,
+        oncologist_id,
+        patient_profile (
+          user_id,
+          auth_user (full_name, phone_number)
+        ),
+        oncologist_profile (
+          user_id,
+          mdcn_number,
+          hospital_affiliation
+        )
+      `)
+      .eq('id', id)
+      .single();
+
+    if (prescriptionError) throw prescriptionError;
+    if (!prescription) return res.status(404).json({ error: 'Prescription not found' });
+    if (prescription.oncologist_profile.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { data: doctorAuth } = await supabase
+      .from('auth_user')
+      .select('full_name')
+      .eq('id', prescription.oncologist_profile.user_id)
+      .single();
+
+    const qrDataUrl = await generatePrescriptionQRCode(id);
+    const pdfData = {
+      prescription_id: prescription.id,
+      patient_name: prescription.patient_profile.auth_user.full_name,
+      patient_phone: prescription.patient_profile.auth_user.phone_number,
+      doctor_name: doctorAuth?.full_name || 'Doctor',
+      mdcn_number: prescription.oncologist_profile.mdcn_number,
+      hospital: prescription.oncologist_profile.hospital_affiliation,
+      drug_name: prescription.drug_name,
+      dosage: prescription.dosage,
+      frequency: prescription.frequency,
+      duration: prescription.duration,
+      instructions: prescription.instructions,
+      issued_at: prescription.issued_at,
+      qr_code: prescription.qr_verification_code,
+      qr_code_url: qrDataUrl
+    };
+
+    const pdfBuffer = await generatePrescriptionPDF(pdfData);
+    const pdfFileName = `prescription_${id}.pdf`;
+    const pdfFilePath = path.join(prescriptionsDir, pdfFileName);
+    fs.writeFileSync(pdfFilePath, pdfBuffer);
+
+    const host = req.get('host');
+    const protocol = req.protocol || 'http';
+    const attachmentUrl = `${protocol}://${host}/uploads/prescriptions/${pdfFileName}`;
+
+    let conversationId = null;
+    const { data: existingWindows } = await supabase
+      .from('consultation_window')
+      .select('id')
+      .eq('patient_id', prescription.patient_id)
+      .eq('oncologist_id', prescription.oncologist_id)
+      .limit(1);
+
+    if (existingWindows && existingWindows.length > 0) {
+      conversationId = existingWindows[0].id;
+    } else {
+      const { data: createdWindow, error: createWindowError } = await supabase
+        .from('consultation_window')
+        .insert([{ patient_id: prescription.patient_id, oncologist_id: prescription.oncologist_id, status: 'active', created_at: new Date().toISOString() }])
+        .select('id')
+        .single();
+
+      if (createWindowError) throw createWindowError;
+      conversationId = createdWindow.id;
+    }
+
+    const messageBody = messageText || `Prescription attached for ${prescription.patient_profile?.auth_user?.full_name || 'your patient'}`;
+    const { data: message, error: messageError } = await supabase
+      .from('message')
+      .insert([{ window_id: conversationId, sender_id: req.user.id, body: messageBody, attachment_url: attachmentUrl }])
+      .select('id, sender_id, body, attachment_url, sent_at, read_at, auth_user(full_name, role)')
+      .single();
+
+    if (messageError) throw messageError;
+
+    await supabase
+      .from('consultation_window')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', conversationId);
+
+    const role = message.auth_user?.role || req.user.role;
+    const senderType = role === 'oncologist' || role === 'doctor' ? 'doctor' : 'patient';
+    const mappedMessage = {
+      id: message.id,
+      text: message.body,
+      sender: senderType,
+      attachment_url: message.attachment_url,
+      created_at: message.sent_at,
+      read_at: message.read_at,
+    };
+
+    try {
+      const withConv = { ...mappedMessage, conversation_id: conversationId };
+      io?.to(`window:${conversationId}`).emit('new_message', withConv);
+      if (prescription.oncologist_id) io?.to(`doctor:${prescription.oncologist_id}`).emit('new_message', withConv);
+    } catch (emitErr) {
+      console.error('Socket emit error:', emitErr);
+    }
+
+    res.status(201).json({
+      success: true,
+      conversation_id: conversationId,
+      attachment_url: attachmentUrl,
+      message: mappedMessage
+    });
+  } catch (err) {
+    console.error('Prescription send error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1613,9 +1754,9 @@ app.get('/api/conversations/:id/messages', verifyAuth, async (req, res) => {
 app.post('/api/conversations/:id/messages', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { text, sender } = req.body;
+    const { text, sender, attachment_url } = req.body;
 
-    if (!text) return res.status(400).json({ error: 'text required' });
+    if (!text && !attachment_url) return res.status(400).json({ error: 'text or attachment_url required' });
 
     // Ensure user is part of the consultation window
     const { data: window } = await supabase
@@ -1632,7 +1773,7 @@ app.post('/api/conversations/:id/messages', verifyAuth, async (req, res) => {
 
     const { data: message, error } = await supabase
       .from('message')
-      .insert([{ window_id: id, sender_id: req.user.id, body: text }])
+      .insert([{ window_id: id, sender_id: req.user.id, body: text || 'Attachment', attachment_url }])
       .select('id, sender_id, body, attachment_url, sent_at, read_at, auth_user(full_name, role)')
       .single();
 
