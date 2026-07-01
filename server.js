@@ -20,6 +20,7 @@ const { Server } = require('socket.io');
 const notificationRoutes = require('./routes/notifications');
 const EmailService = require('./services/emailservice');
 const adminRoutes = require('./routes/admin');
+const { buildAttachmentUrl } = require('./utils/attachmentUrl');
 
 
 dotenv.config();
@@ -1022,9 +1023,7 @@ app.post('/api/prescriptions/:id/send-to-patient', verifyAuth, async (req, res) 
     const pdfFilePath = path.join(prescriptionsDir, pdfFileName);
     fs.writeFileSync(pdfFilePath, pdfBuffer);
 
-    const host = req.get('host');
-    const protocol = req.protocol || 'http';
-    const attachmentUrl = `${protocol}://${host}/uploads/prescriptions/${pdfFileName}`;
+    const attachmentUrl = buildAttachmentUrl(req, pdfFileName);
 
     let conversationId = null;
     const { data: existingWindows } = await supabase
