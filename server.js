@@ -23,6 +23,11 @@ const adminRoutes = require('./routes/admin');
 const { buildAttachmentUrl } = require('./utils/attachmentUrl');
 const { resolveLetterheadUrl } = require('./utils/prescriptionPdfHelpers');
 
+async function loadImageBufferFromUrl(url) {
+  const response = await axios.get(url, { responseType: 'arraybuffer' });
+  return Buffer.from(response.data);
+}
+
 
 dotenv.config();
 
@@ -274,36 +279,58 @@ async function generatePrescriptionQRCode(prescriptionId) {
 // HELPER: Generate prescription PDF
 // ────────────────────────────────────────────────────────────────────────────
 async function generatePrescriptionPDF(prescriptionData) {
-  return new Promise((resolve, reject) => {
-    try {
-      const pdf = new PDFDocument({
-        size: 'A4',
-        margin: 40
-      });
+  const pdf = new PDFDocument({
+    size: 'A4',
+    margin: 40
+  });
 
-      const chunks = [];
-      pdf.on('data', chunk => chunks.push(chunk));
-      pdf.on('end', () => {
-        const pdfBuffer = Buffer.concat(chunks);
-        resolve(pdfBuffer);
-      });
-      pdf.on('error', reject);
+  const chunks = [];
+  pdf.on('data', chunk => chunks.push(chunk));
 
-      // Add header
-      if (prescriptionData.letterhead_url) {
-        try {
-          const letterheadImage = prescriptionData.letterhead_url;
-          pdf.image(letterheadImage, {
-            fit: [520, 120],
-            align: 'center'
-          });
-          pdf.moveDown(0.5);
-        } catch (imgErr) {
-          console.warn('Could not add letterhead image to PDF:', imgErr.message);
+  const pdfCompletion = new Promise((resolve, reject) => {
+    pdf.on('end', () => {
+      const pdfBuffer = Buffer.concat(chunks);
+      resolve(pdfBuffer);
+    });
+    pdf.on('error', reject);
+  });
+
+  try {
+    // Add header
+    if (prescriptionData.letterhead_url) {
+      try {
+        let letterheadImage = prescriptionData.letterhead_url;
+        const isRemote = /^https?:\/\//i.test(letterheadImage);
+        const ext = path.extname(letterheadImage).toLowerCase();
+
+        if (isRemote) {
+          if (ext === '.pdf') {
+            console.warn('Skipping remote PDF letterhead; PDFKit does not support embedding PDF as image.');
+          } else {
+            const imageBuffer = await loadImageBufferFromUrl(letterheadImage);
+            pdf.image(imageBuffer, {
+              fit: [520, 120],
+              align: 'center'
+            });
+            pdf.moveDown(0.5);
+          }
+        } else {
+          if (ext === '.pdf') {
+            console.warn('Skipping local PDF letterhead; PDFKit does not support embedding PDF as image.');
+          } else {
+            pdf.image(letterheadImage, {
+              fit: [520, 120],
+              align: 'center'
+            });
+            pdf.moveDown(0.5);
+          }
         }
+      } catch (imgErr) {
+        console.warn('Could not add letterhead image to PDF:', imgErr.message);
       }
+    }
 
-      pdf.fontSize(20).font('Helvetica-Bold').text('PRESCRIPTION', { align: 'center' });
+    pdf.fontSize(20).font('Helvetica-Bold').text('PRESCRIPTION', { align: 'center' });
       pdf.moveDown(0.5);
       pdf.fontSize(11).font('Helvetica').text('Digital Prescription from OncoConnect', { align: 'center' });
       pdf.moveTo(40, pdf.y).lineTo(555, pdf.y).stroke();
@@ -369,8 +396,7 @@ async function generatePrescriptionPDF(prescriptionData) {
     } catch (err) {
       reject(err);
     }
-  });
-}
+  };
 
 // ════════════════════════════════════════════════════════════════════════════
 // DOCTOR ENDPOINTS
@@ -961,6 +987,11 @@ app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => 
       qr_code_url: qrDataUrl,
       letterhead_url: resolvedLetterheadUrl
     };
+
+    // Ensure prescriptions output folder exists before saving
+    if (!fs.existsSync(prescriptionsDir)) {
+      fs.mkdirSync(prescriptionsDir, { recursive: true });
+    }
 
     // Generate PDF
     const pdfBuffer = await generatePrescriptionPDF(pdfData);
