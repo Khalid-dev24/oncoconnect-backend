@@ -21,6 +21,7 @@ const notificationRoutes = require('./routes/notifications');
 const EmailService = require('./services/emailservice');
 const adminRoutes = require('./routes/admin');
 const { buildAttachmentUrl } = require('./utils/attachmentUrl');
+const { resolveLetterheadUrl } = require('./utils/prescriptionPdfHelpers');
 
 
 dotenv.config();
@@ -289,6 +290,19 @@ async function generatePrescriptionPDF(prescriptionData) {
       pdf.on('error', reject);
 
       // Add header
+      if (prescriptionData.letterhead_url) {
+        try {
+          const letterheadImage = prescriptionData.letterhead_url;
+          pdf.image(letterheadImage, {
+            fit: [520, 120],
+            align: 'center'
+          });
+          pdf.moveDown(0.5);
+        } catch (imgErr) {
+          console.warn('Could not add letterhead image to PDF:', imgErr.message);
+        }
+      }
+
       pdf.fontSize(20).font('Helvetica-Bold').text('PRESCRIPTION', { align: 'center' });
       pdf.moveDown(0.5);
       pdf.fontSize(11).font('Helvetica').text('Digital Prescription from OncoConnect', { align: 'center' });
@@ -875,6 +889,7 @@ app.post('/api/prescriptions/:id/generate-qr', verifyAuth, async (req, res) => {
 app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const { letterhead_url: explicitLetterheadUrl } = req.body || {};
 
     // Fetch prescription with all related data
     const { data: prescription, error: prescriptionError } = await supabase
@@ -898,7 +913,8 @@ app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => 
         oncologist_profile (
           user_id,
           mdcn_number,
-          hospital_affiliation
+          hospital_affiliation,
+          letterhead_url
         )
       `)
       .eq('id', id)
@@ -919,6 +935,11 @@ app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => 
       .eq('id', prescription.oncologist_profile.user_id)
       .single();
 
+    const resolvedLetterheadUrl = resolveLetterheadUrl(
+      explicitLetterheadUrl,
+      prescription.oncologist_profile.letterhead_url
+    );
+
     // Generate QR code for PDF
     const qrDataUrl = await generatePrescriptionQRCode(id);
 
@@ -937,7 +958,8 @@ app.post('/api/prescriptions/:id/generate-pdf', verifyAuth, async (req, res) => 
       instructions: prescription.instructions,
       issued_at: prescription.issued_at,
       qr_code: prescription.qr_verification_code,
-      qr_code_url: qrDataUrl
+      qr_code_url: qrDataUrl,
+      letterhead_url: resolvedLetterheadUrl
     };
 
     // Generate PDF
