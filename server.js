@@ -405,7 +405,7 @@ async function generatePrescriptionPDF(prescriptionData) {
 // POST /api/doctors/register — Doctor self-onboarding
 app.post('/api/doctors/register', async (req, res) => {
   try {
-    const { phone_number, full_name, email, mdcn_number, hospital, specialty, bank_name, bank_account } = req.body;
+    const { phone_number, full_name, email, mdcn_number, hospital, specialty, bank_name, bank_account, bank_account_name } = req.body;
 
     if (!phone_number || !full_name || !mdcn_number) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -457,7 +457,8 @@ app.post('/api/doctors/register', async (req, res) => {
         specialty,
         invite_code: inviteCode,
         bank_name,
-        bank_account_number: bank_account, // In production, encrypt this
+        bank_account_number: bank_account,
+        bank_account_name: bank_account_name || null,
         is_verified: false
       })
       .select()
@@ -465,14 +466,29 @@ app.post('/api/doctors/register', async (req, res) => {
 
     if (profileError) throw profileError;
 
+    const token = jwt.sign(
+      { user_id: authData.user.id, doctor_id: doctorProfile.id, role: 'oncologist' },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
     res.status(201).json({
       message: 'Doctor registered successfully. Awaiting MDCN verification.',
+      token,
       doctor: {
         id: doctorProfile.id,
-        name: full_name,
-        mdcn: mdcn_number,
+        user_id: authData.user.id,
+        full_name: full_name,
+        email: email || null,
+        phone_number: phone_number || null,
+        mdcn_number: mdcn_number,
+        hospital: hospital || null,
+        specialty: specialty || null,
+        bank_name: bank_name || null,
+        bank_account_number: bank_account ? bank_account : null,
+        bank_account_name: bank_account_name || null,
         invite_code: inviteCode,
-        verified: false
+        is_verified: false
       }
     });
   } catch (err) {
@@ -492,7 +508,9 @@ app.post('/api/doctors/login', async (req, res) => {
     // Find doctor by MDCN
     const { data: doctorProfile, error: profileError } = await supabase
       .from('oncologist_profile')
-      .select('id, user_id')
+      .select(
+        'id, user_id, mdcn_number, hospital_affiliation, specialty, bank_name, bank_account_number, bank_account_name, profile_photo_url, signature_url, letterhead_url, is_verified'
+      )
       .eq('mdcn_number', mdcn_number)
       .single();
 
@@ -503,7 +521,7 @@ app.post('/api/doctors/login', async (req, res) => {
     // Verify phone number matches
     const { data: authUser, error: userError } = await supabase
       .from('auth_user')
-      .select('phone_number, id')
+      .select('phone_number, full_name, email, id')
       .eq('id', doctorProfile.user_id)
       .single();
 
@@ -521,7 +539,20 @@ app.post('/api/doctors/login', async (req, res) => {
     res.json({
       doctor: {
         id: doctorProfile.id,
-        user_id: authUser.id
+        user_id: authUser.id,
+        full_name: authUser.full_name,
+        email: authUser.email,
+        phone_number: authUser.phone_number,
+        mdcn_number: doctorProfile.mdcn_number,
+        hospital: doctorProfile.hospital_affiliation,
+        specialty: doctorProfile.specialty,
+        bank_name: doctorProfile.bank_name,
+        bank_account_number: doctorProfile.bank_account_number,
+        bank_account_name: doctorProfile.bank_account_name,
+        profile_photo_url: doctorProfile.profile_photo_url,
+        signature_url: doctorProfile.signature_url,
+        letterhead_url: doctorProfile.letterhead_url,
+        is_verified: doctorProfile.is_verified
       },
       token
     });
