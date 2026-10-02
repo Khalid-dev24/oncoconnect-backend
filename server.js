@@ -25,7 +25,19 @@ const { resolveLetterheadUrl } = require('./utils/prescriptionPdfHelpers');
 
 function normalizePhoneNumber(value) {
   const digits = String(value || '').replace(/\D/g, '');
-  return digits.startsWith('234') ? `0${digits.slice(3)}` : digits;
+  if (digits.startsWith('234')) {
+    const nationalNumber = digits.slice(3).replace(/^0+/, '');
+    return nationalNumber ? `0${nationalNumber}` : '';
+  }
+  if (digits.startsWith('0')) return digits;
+  return digits.length === 10 ? `0${digits}` : digits;
+}
+
+function toSupabasePhoneNumber(value) {
+  const normalizedPhoneNumber = normalizePhoneNumber(value);
+  return /^0\d{10}$/.test(normalizedPhoneNumber)
+    ? `+234${normalizedPhoneNumber.slice(1)}`
+    : normalizedPhoneNumber;
 }
 
 async function loadImageBufferFromUrl(url) {
@@ -421,8 +433,10 @@ app.post('/api/doctors/register', async (req, res) => {
     // Create Supabase auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
       email: email || `${normalizedPhoneNumber}@oncoconnect.local`,
+      phone: toSupabasePhoneNumber(normalizedPhoneNumber),
       password: crypto.randomBytes(16).toString('hex'),
       email_confirm: true,
+      phone_confirm: false,
       user_metadata: { phone: normalizedPhoneNumber, role: 'oncologist' }
     });
 
@@ -460,6 +474,7 @@ app.post('/api/doctors/register', async (req, res) => {
       .insert({
         user_id: authData.user.id,
         mdcn_number: normalizedMdcnNumber,
+        phone_number: normalizedPhoneNumber,
         hospital_affiliation: hospital,
         specialty,
         invite_code: inviteCode,
@@ -524,6 +539,7 @@ app.post('/api/doctors/login', async (req, res) => {
       .single();
 
     if (profileError || !doctorProfile) {
+      console.warn('Doctor login rejected: no oncologist profile matches the supplied MDCN');
       return res.status(401).json({ error: 'Invalid MDCN or phone number' });
     }
 
@@ -534,8 +550,33 @@ app.post('/api/doctors/login', async (req, res) => {
       .eq('id', doctorProfile.user_id)
       .single();
 
-    if (userError || normalizePhoneNumber(authUser.phone_number) !== normalizedPhoneNumber) {
+    if (userError || !authUser) {
+      console.warn('Doctor login rejected: no auth_user row for the matching oncologist profile');
       return res.status(401).json({ error: 'Invalid MDCN or phone number' });
+    }
+
+    if (normalizePhoneNumber(authUser.phone_number) !== normalizedPhoneNumber) {
+      console.warn('Doctor login rejected: phone number mismatch for the supplied MDCN');
+      return res.status(401).json({ error: 'Invalid MDCN or phone number' });
+    }
+
+    if (doctorProfile.phone_number !== normalizedPhoneNumber) {
+      const { error: phoneUpdateError } = await supabase
+        .from('oncologist_profile')
+        .update({ phone_number: normalizedPhoneNumber })
+        .eq('id', doctorProfile.id);
+
+      if (phoneUpdateError) {
+        console.warn('Could not sync doctor profile phone number:', phoneUpdateError.message);
+      }
+    }
+
+    const { error: authPhoneUpdateError } = await supabase.auth.admin.updateUserById(
+      authUser.id,
+      { phone: toSupabasePhoneNumber(normalizedPhoneNumber) }
+    );
+    if (authPhoneUpdateError) {
+      console.warn('Could not sync Supabase Auth phone number:', authPhoneUpdateError.message);
     }
 
     // Generate JWT token (use your JWT secret)
