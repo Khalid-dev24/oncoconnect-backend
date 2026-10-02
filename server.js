@@ -23,6 +23,11 @@ const adminRoutes = require('./routes/admin');
 const { buildAttachmentUrl } = require('./utils/attachmentUrl');
 const { resolveLetterheadUrl } = require('./utils/prescriptionPdfHelpers');
 
+function normalizePhoneNumber(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.startsWith('234') ? `0${digits.slice(3)}` : digits;
+}
+
 async function loadImageBufferFromUrl(url) {
   const response = await axios.get(url, { responseType: 'arraybuffer' });
   return Buffer.from(response.data);
@@ -406,17 +411,19 @@ async function generatePrescriptionPDF(prescriptionData) {
 app.post('/api/doctors/register', async (req, res) => {
   try {
     const { phone_number, full_name, email, mdcn_number, hospital, specialty, bank_name, bank_account, bank_account_name } = req.body;
+    const normalizedPhoneNumber = normalizePhoneNumber(phone_number);
+    const normalizedMdcnNumber = String(mdcn_number || '').trim();
 
-    if (!phone_number || !full_name || !mdcn_number) {
+    if (!normalizedPhoneNumber || !full_name || !normalizedMdcnNumber) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
     // Create Supabase auth user
     const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-      email: email || `${phone_number}@oncoconnect.local`,
+      email: email || `${normalizedPhoneNumber}@oncoconnect.local`,
       password: crypto.randomBytes(16).toString('hex'),
       email_confirm: true,
-      user_metadata: { phone: phone_number, role: 'oncologist' }
+      user_metadata: { phone: normalizedPhoneNumber, role: 'oncologist' }
     });
 
     if (authError) throw authError;
@@ -427,7 +434,7 @@ app.post('/api/doctors/register', async (req, res) => {
       .insert({
         id: authData.user.id,
         role: 'oncologist',
-        phone_number,
+        phone_number: normalizedPhoneNumber,
         full_name,
         email
       });
@@ -452,7 +459,7 @@ app.post('/api/doctors/register', async (req, res) => {
       .from('oncologist_profile')
       .insert({
         user_id: authData.user.id,
-        mdcn_number,
+        mdcn_number: normalizedMdcnNumber,
         hospital_affiliation: hospital,
         specialty,
         invite_code: inviteCode,
@@ -480,8 +487,8 @@ app.post('/api/doctors/register', async (req, res) => {
         user_id: authData.user.id,
         full_name: full_name,
         email: email || null,
-        phone_number: phone_number || null,
-        mdcn_number: mdcn_number,
+        phone_number: normalizedPhoneNumber,
+        mdcn_number: normalizedMdcnNumber,
         hospital: hospital || null,
         specialty: specialty || null,
         bank_name: bank_name || null,
@@ -500,8 +507,10 @@ app.post('/api/doctors/register', async (req, res) => {
 app.post('/api/doctors/login', async (req, res) => {
   try {
     const { mdcn_number, phone_number } = req.body;
+    const normalizedPhoneNumber = normalizePhoneNumber(phone_number);
+    const normalizedMdcnNumber = String(mdcn_number || '').trim();
 
-    if (!mdcn_number || !phone_number) {
+    if (!normalizedMdcnNumber || !normalizedPhoneNumber) {
       return res.status(400).json({ error: 'MDCN and phone number required' });
     }
 
@@ -511,7 +520,7 @@ app.post('/api/doctors/login', async (req, res) => {
       .select(
         'id, user_id, mdcn_number, hospital_affiliation, specialty, bank_name, bank_account_number, bank_account_name, profile_photo_url, signature_url, letterhead_url, is_verified'
       )
-      .eq('mdcn_number', mdcn_number)
+      .eq('mdcn_number', normalizedMdcnNumber)
       .single();
 
     if (profileError || !doctorProfile) {
@@ -525,7 +534,7 @@ app.post('/api/doctors/login', async (req, res) => {
       .eq('id', doctorProfile.user_id)
       .single();
 
-    if (userError || authUser.phone_number !== phone_number) {
+    if (userError || normalizePhoneNumber(authUser.phone_number) !== normalizedPhoneNumber) {
       return res.status(401).json({ error: 'Invalid MDCN or phone number' });
     }
 
