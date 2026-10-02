@@ -94,7 +94,7 @@ async function findAndSyncDoctorForLogin(supabase, { mdcn_number, phone_number }
 
   const { data: doctorProfile, error: profileError } = await supabase
     .from('oncologist_profile')
-    .select('id, user_id, mdcn_number, phone_number, hospital_affiliation, specialty, bank_name, bank_account_number, bank_account_name, profile_photo_url, signature_url, letterhead_url, is_verified')
+    .select('id, user_id, mdcn_number, phone_number, hospital_affiliation, specialty, bank_name, bank_account_number, bank_account_name, signature_url, letterhead_url, is_verified')
     .ilike('mdcn_number', mdcnNumber)
     .maybeSingle();
 

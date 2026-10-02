@@ -6,6 +6,7 @@ const {
 
 function makeSupabase({ authUser, doctorProfile } = {}) {
   const inserted = {};
+  const selected = {};
   const updated = {};
   const supabase = {
     auth: {
@@ -35,7 +36,10 @@ function makeSupabase({ authUser, doctorProfile } = {}) {
           data: table === 'oncologist_profile' ? doctorProfile || null : authUser || null,
           error: null,
         })),
-        select: jest.fn(() => query),
+        select: jest.fn((columns) => {
+          selected[table] = columns;
+          return query;
+        }),
         single: jest.fn(async () => ({ data: doctorProfile, error: null })),
         update: jest.fn((payload) => {
           updated[table] = payload;
@@ -48,7 +52,7 @@ function makeSupabase({ authUser, doctorProfile } = {}) {
     }),
   };
 
-  return { supabase, inserted, updated };
+  return { supabase, inserted, selected, updated };
 }
 
 describe('doctor auth phone normalization', () => {
@@ -107,7 +111,7 @@ describe('findAndSyncDoctorForLogin', () => {
   };
 
   it('logs in across Nigerian phone formats and repairs all persisted formats', async () => {
-    const { supabase, updated } = makeSupabase({
+    const { supabase, selected, updated } = makeSupabase({
       authUser: { id: 'auth-user-id', phone_number: '08035550123', full_name: 'Test Doctor' },
       doctorProfile,
     });
@@ -118,6 +122,8 @@ describe('findAndSyncDoctorForLogin', () => {
     });
 
     expect(result).toEqual(expect.objectContaining({ phoneNumber: '+2348035550123' }));
+    expect(selected.oncologist_profile).not.toContain('profile_photo_url');
+    expect(selected.oncologist_profile).toContain('signature_url');
     expect(supabase.from).toHaveBeenCalledWith('auth_user');
     expect(updated.auth_user).toEqual({ phone_number: '+2348035550123' });
     expect(updated.oncologist_profile).toEqual({ phone_number: '+2348035550123' });
